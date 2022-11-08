@@ -1,7 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 
 use eframe::NativeOptions;
-use egui::{CentralPanel, Color32, ColorImage, ImageData, TextureHandle};
+use egui::{CentralPanel, Color32, ColorImage, ImageData, TextureHandle, TextureFilter, Ui, Widget, Response, Sense, vec2, Rounding};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::media::Type;
@@ -34,7 +34,7 @@ impl eframe::App for App {
             ui.text_edit_singleline(&mut self.media_path);
             if ui.button("load").clicked() {
                 self.busy = false;
-                match VideoStream::start(&self.media_path) {
+                match VideoStream::start(ctx, &self.media_path) {
                     Ok(video_streamer) => {
                         self.frame_size = None;
                         self.video_stream = Some(Arc::new(Mutex::new(video_streamer)))
@@ -55,7 +55,8 @@ impl eframe::App for App {
                     }
                     if !self.busy {
                         if let Some(streamer_arc) = self.video_stream.as_ref() {
-                            if let Ok(mut streamer) = streamer_arc.try_lock() {
+                            if let Ok(mut streamer) = streamer_arc.try_lock().as_deref_mut() {
+                                ui.add(streamer);
                                 ui.label(format!("frame index: {}", streamer.frame_index));
                                 ui.label(format!("frame rate: {}", streamer.framerate));
                                 ui.label(format!("size: {}x{}", streamer.width, streamer.height));
@@ -96,7 +97,7 @@ impl eframe::App for App {
                                         let mut strr = str.lock().unwrap();
                                         match strr.recieve_next_packet_until_frame() {
                                             Ok(frame) => {
-                                                handle.set(frame, egui::TextureFilter::Linear)
+                                                handle.set(frame, strr.texture_fiter)
                                             }
                                             _ => (),
                                         }
@@ -107,7 +108,7 @@ impl eframe::App for App {
                         } else {
                         }
                     }
-                    ui.image(texture_handle.id(), self.frame_size.unwrap_or([100., 100.]));
+                    // ui.image(texture_handle.id(), self.frame_size.unwrap_or([100., 100.]));
 
                 } else {
                     self.tex_id = Some(ui.ctx().load_texture(
@@ -132,11 +133,27 @@ struct VideoStream {
     framerate: f64,
     scaler: Context,
     width: u32,
+    texture_fiter: TextureFilter,
+    texture_id: Option<TextureHandle>,
     height: u32,
 }
 
+impl Widget for &mut VideoStream {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let size = [self.width as f32, self.height as f32];
+        if let Some(texture_id) = self.texture_id.as_ref() {
+            ui.image(texture_id.id(), size)
+        } else {
+            let (rect, response) = ui.allocate_at_least(size.into(), Sense::click());
+            ui.painter().rect_filled(rect, Rounding::none(), Color32::BLACK);
+            response
+        }
+    }
+}
+
 impl VideoStream {
-    fn start(input_path: &String) -> Result<Self> {
+
+    fn start(ctx: &egui::Context, input_path: &String) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -161,17 +178,25 @@ impl VideoStream {
             Flags::BILINEAR,
         )?;
 
-        Ok(Self {
+        let mut streamer = Self {
             decoder: video_decoder,
             eof: false,
             video_stream_index,
+            texture_fiter: TextureFilter::Linear,
             input_context,
             framerate,
+            texture_id: None,
             width,
             height,
             frame_index: 0,
             scaler: frame_scaler,
-        })
+        };
+
+        if let Ok(first_frame) = streamer.recieve_next_packet_until_frame() {
+            streamer.texture_id = Some(ctx.load_texture("vidstream", first_frame, streamer.texture_fiter))
+        }
+
+        Ok(streamer)
     }
 
     fn recieve_next_packet(&mut self) -> Result<()> {
