@@ -1,0 +1,22 @@
+[package]
+name = "egui-video"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+egui = "0.19.0"
+eframe = "0.19.0"
+# rsmpeg ="0.12.0+ffmpeg.5.1"
+# ffmpeg-next = "5.1.1"
+ffmpeg-next = { path = "rust-ffmpeg" }
+anyhow = "1.0.66"
+image = "0.24.4"
+timer = "0.2.0"
+chrono = "0.4.22"
+
+# [env]
+# FFMPEG_PKG_CONFIG_PATH="C:/Users/Moruph/ffmpeg/lib/pkgconfig"
+# FFMPEG_INCLUDE_DIR="C:/Users/Moruph/ffmpeg/include"
+# FFMPEG_LIBS_DIR="C:/Users/Moruph/ffmpeg/lib"
