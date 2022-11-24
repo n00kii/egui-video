@@ -16,8 +16,3 @@ timer = "0.2.0"
 chrono = "0.4.22"
 derivative = "2.2.0"
 tempfile = "3.3.0"
-
-# [env]
-# FFMPEG_PKG_CONFIG_PATH="C:/Users/Moruph/ffmpeg/lib/pkgconfig"
-# FFMPEG_INCLUDE_DIR="C:/Users/Moruph/ffmpeg/include"
-# FFMPEG_LIBS_DIR="C:/Users/Moruph/ffmpeg/lib"
