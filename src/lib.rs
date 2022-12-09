@@ -2,12 +2,10 @@ extern crate ffmpeg_next as ffmpeg;
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use derivative::Derivative;
-use eframe::epaint::Shadow;
-use eframe::NativeOptions;
+use egui::epaint::Shadow;
 use egui::{
-    vec2, Align2, CentralPanel, Color32, ColorImage, FontId, Grid, Image, Rect, Response, Rounding,
-    Sense, TextureFilter, TextureHandle, TextureId, Ui,
+    vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding,
+    Sense, TextureFilter, TextureHandle, TextureId, Ui, TextureOptions,
 };
 use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::input::Input;
@@ -40,7 +38,7 @@ pub struct VideoStream {
     pub stream_decoder: Arc<Mutex<StreamDecoder>>,
     pub player_state: Arc<Mutex<PlayerState>>,
     pub framerate: f64,
-    texture_fiter: TextureFilter,
+    texture_options: TextureOptions,
     texture_handle: TextureHandle,
     pub height: u32,
     pub width: u32,
@@ -121,7 +119,7 @@ impl VideoStream {
     fn spawn_timer(&mut self) {
         // if let Some(texture_handle) = self.texture_handle.as_ref() {
         let mut texture_handle = self.texture_handle.clone();
-        let texture_filter = self.texture_fiter.clone();
+        let texture_options = self.texture_options.clone();
         let ctx = self.ctx_ref.clone();
         let stream_decoder = Arc::clone(&self.stream_decoder);
         let player_state = Arc::clone(&self.player_state);
@@ -135,7 +133,7 @@ impl VideoStream {
             if player_state == PlayerState::Playing {
                 match stream_decoder.recieve_next_packet_until_frame() {
                     Ok(frame) => {
-                        texture_handle.set(frame, texture_filter);
+                        texture_handle.set(frame, texture_options);
                     }
                     _ => (),
                 }
@@ -167,7 +165,7 @@ impl VideoStream {
                     // frame preview
                     match stream_decoder.recieve_next_packet_until_frame() {
                         Ok(frame) => {
-                            texture_handle.set(frame, texture_filter);
+                            texture_handle.set(frame, texture_options);
                         }
                         _ => (),
                     }
@@ -493,12 +491,12 @@ impl VideoStream {
             player_state: Arc::clone(&player_state),
             scaler: frame_scaler,
         };
-        let texture_filter = TextureFilter::Linear;
-        let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_filter);
+        let texture_options = TextureOptions::LINEAR;
+        let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
 
         let mut streamer = Self {
             stream_decoder: Arc::new(Mutex::new(stream_decoder)),
-            texture_fiter: texture_filter,
+            texture_options,
             framerate,
             frame_timer: Timer::new(),
             preseek_player_state: None,
@@ -534,7 +532,7 @@ impl VideoStream {
             Ok(Ok(first_frame)) => {
                 let texture_handle =
                     self.ctx_ref
-                        .load_texture("vidstream", first_frame, self.texture_fiter);
+                        .load_texture("vidstream", first_frame, self.texture_options);
                 let texture_handle_clone = texture_handle.clone();
                 self.texture_handle = texture_handle;
                 Ok(texture_handle_clone)
