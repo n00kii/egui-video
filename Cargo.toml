@@ -8,13 +8,12 @@ exclude = [ "rust=ffmpeg" ]
 
 [dependencies]
 egui = "0.20.0"
-eframe = "0.20.0"
 ffmpeg-next = { path = "rust-ffmpeg" }
 anyhow = "1.0.66"
 image = "0.24.4"
 timer = "0.2.0"
 chrono = "0.4.22"
-derivative = "2.2.0"
 tempfile = "3.3.0"
 
 [dev-dependencies]
+eframe = "0.20.0"

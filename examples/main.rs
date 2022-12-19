@@ -1,7 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
-use derivative::Derivative;
 use eframe::NativeOptions;
-use egui::{CentralPanel, Grid};
+use egui::{CentralPanel, Checkbox, Grid, Slider, TextEdit};
 use egui_video::VideoStream;
 fn main() {
     ffmpeg::init().unwrap();
@@ -11,14 +10,20 @@ fn main() {
         Box::new(|_| Box::new(App::default())),
     )
 }
-#[derive(Derivative)]
-#[derivative(Default)]
 struct App {
-    #[derivative(Default(
-        value = "\"F:/Archive/veryold/Docs/Custom Office Templates/moveit/fe.mp4\".to_string()"
-    ))]
     media_path: String,
+    stream_size_scale: f32,
     video_stream: Option<VideoStream>,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            media_path: String::new(),
+            stream_size_scale: 1.,
+            video_stream: None,
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -45,6 +50,7 @@ impl eframe::App for App {
                 ui.label(format!("{:?}", streamer.player_state.try_lock().as_deref()));
 
                 ui.checkbox(&mut streamer.looping, "loop");
+                ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=1.));
                 if ui.button("start playing").clicked() {
                     streamer.start()
                 }
@@ -60,7 +66,10 @@ impl eframe::App for App {
                 Grid::new("h").show(ui, |ui| {
                     streamer.ui(
                         ui,
-                        [streamer.width as f32 * 0.5, streamer.height as f32 * 0.5],
+                        [
+                            streamer.width as f32 * self.stream_size_scale,
+                            streamer.height as f32 * self.stream_size_scale,
+                        ],
                     );
                 });
             }
