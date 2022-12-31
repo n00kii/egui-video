@@ -4,8 +4,8 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use egui::epaint::Shadow;
 use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding,
-    Sense, TextureFilter, TextureHandle, TextureId, Ui, TextureOptions,
+    vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding, Sense,
+    TextureHandle, TextureId, TextureOptions, Ui,
 };
 use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::input::Input;
@@ -13,15 +13,15 @@ use ffmpeg::format::{input, Pixel};
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
-use ffmpeg::{rescale, Rational};
+use ffmpeg::{rescale, Rational, Rescale};
 
 use std::io::prelude::*;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use tempfile::NamedTempFile;
 use timer::{Guard, Timer};
-
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
@@ -51,7 +51,7 @@ pub struct VideoStream {
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
     temp_file: Option<NamedTempFile>,
-    elapsed_ms_arc: Arc<Mutex<i64>>,
+    elapsed_ms_arc: Arc<AtomicI64>,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -71,18 +71,19 @@ pub struct StreamDecoder {
     input_context: Input,
     elapsed_ms: i64,
     scaler: Context,
-    elapsed_ms_arc: Arc<Mutex<i64>>,
+    elapsed_ms_arc: Arc<AtomicI64>,
+    time_base: Rational,
 }
 
-use ffmpeg::Rescale;
 const AV_TIME_BASE_RATIONAL: Rational = Rational(1, AV_TIME_BASE);
 
 fn timestamp_to_millisec(timestamp: i64, time_base: Rational) -> i64 {
     (timestamp as f64 * (time_base.numerator() as f64) / (time_base.denominator() as f64) * 1000.)
         as i64
 }
+
 fn millisec_to_timestamp(millisec: i64, time_base: Rational) -> i64 {
-    (millisec as f64 * (time_base.denominator() as f64) / (time_base.numerator() as f64) / 1000.)
+    (millisec as f64 * (time_base.denominator() as f64) / (time_base.numerator() as f64) / 0.001)
         as i64
 }
 
@@ -139,37 +140,46 @@ impl VideoStream {
                 }
             } else if let PlayerState::Seeking(seek_frac) = player_state {
                 let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
-                let target: i64 =
-                    millisec_to_timestamp(target_ms, stream_decoder.decoder.time_base());
+                let seeking_forward = target_ms > stream_decoder.elapsed_ms;
+                let target_ts = millisec_to_timestamp(target_ms, stream_decoder.decoder.time_base());
+                let scaled_target_ts = target_ts.rescale(stream_decoder.time_base, rescale::TIME_BASE);
+
                 (seek_frac * stream_decoder.input_context.duration() as f32) as i64;
-                let _ = stream_decoder.input_context.seek(target, ..target);
-                if seek_frac >= 0.99 {
-                    // prevent inifinite loop near end of stream
-                    *stream_decoder.player_state.lock().as_deref_mut().unwrap() =
-                        PlayerState::EndOfFile;
-                } else if seek_frac > 0. {
-                    // this drop frame loop lets us refresh until current_ts is accurate
-                    while (stream_decoder.elapsed_ms as f64 / duration_ms as f64)
-                        >= seek_frac as f64
-                    {
-                        stream_decoder.drop_frames();
-                    }
-
-                    // this drop frame loop drops frames until we are at desired
-                    while (stream_decoder.elapsed_ms as f64 / duration_ms as f64)
-                        <= seek_frac as f64
-                    {
-                        stream_decoder.drop_frames();
-                    }
-
-                    // frame preview
-                    match stream_decoder.recieve_next_packet_until_frame() {
-                        Ok(frame) => {
-                            texture_handle.set(frame, texture_options);
+                if let Err(e) = stream_decoder.input_context.seek(scaled_target_ts, ..scaled_target_ts) {
+                    dbg!(e);
+                } else {
+                    if seek_frac >= 0.99 {
+                        // prevent inifinite loop near end of stream
+                        *stream_decoder.player_state.lock().as_deref_mut().unwrap() =
+                            PlayerState::EndOfFile;
+                    } else if seek_frac > 0. {
+                        // this drop frame loop lets us refresh until current_ts is accurate
+                        if !seeking_forward {
+                            while (stream_decoder.elapsed_ms as f64 / duration_ms as f64)
+                                > seek_frac as f64
+                            {
+                                stream_decoder.drop_frames();
+                                
+                            }
                         }
-                        _ => (),
+
+                        // this drop frame loop drops frames until we are at desired
+                        while (stream_decoder.elapsed_ms as f64 / duration_ms as f64)
+                            < seek_frac as f64
+                        {
+                            stream_decoder.drop_frames();
+                            // dbg!(stream_decoder.elapsed_ms as f64 / duration_ms as f64);
+                        }
+
+                        // frame preview
+                        match stream_decoder.recieve_next_packet_until_frame() {
+                            Ok(frame) => {
+                                texture_handle.set(frame, texture_options);
+                            }
+                            _ => (),
+                        }
                     }
-                }
+                };
             }
         });
         self.frame_thread = Some(timer_guard)
@@ -186,19 +196,19 @@ impl VideoStream {
 
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
-        if let Ok(elapsed_ms_arc) = self.elapsed_ms_arc.try_lock() {
-            if self.last_seek_ms.is_some() {
-                let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-                if *elapsed_ms_arc > last_seek_ms || *elapsed_ms_arc == 0 {
-                    self.elapsed_ms = *elapsed_ms_arc;
-                    self.last_seek_ms = None
-                } else {
-                    self.elapsed_ms = last_seek_ms;
-                }
+        let elapsed_ms_arc = self.elapsed_ms_arc.load(Ordering::Relaxed);
+        if self.last_seek_ms.is_some() {
+            let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
+            if elapsed_ms_arc > last_seek_ms || elapsed_ms_arc == 0 {
+                self.elapsed_ms = elapsed_ms_arc;
+                self.last_seek_ms = None
             } else {
-                self.elapsed_ms = *elapsed_ms_arc
+                self.elapsed_ms = last_seek_ms;
             }
+        } else {
+            self.elapsed_ms = elapsed_ms_arc
         }
+        // }
 
         if let Ok(player_state) = self.player_state.try_lock().as_deref_mut() {
             if let Ok(mut stream_decoder) = self.stream_decoder.try_lock() {
@@ -233,7 +243,7 @@ impl VideoStream {
         self.render_ui(ui, &response);
         response
     }
-    
+
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
         let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
         let response = ui.put(rect, image);
@@ -311,7 +321,7 @@ impl VideoStream {
                 Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
             let seekbar_interact_rect = fullseekbar_rect.expand(10.);
             ui.interact(seekbar_interact_rect, playback_response.id, Sense::drag());
-            
+
             let seekbar_hovered = ui.rect_contains_pointer(seekbar_interact_rect);
             let seekbar_hover_anim_frac = ui.ctx().animate_bool_with_time(
                 playback_response.id.with("seekbar_hover_anim"),
@@ -480,13 +490,14 @@ impl VideoStream {
 
         let player_state = Arc::new(Mutex::new(PlayerState::Stopped));
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
-        let elapsed_ms_arc = Arc::new(Mutex::new(0));
+        let elapsed_ms_arc = Arc::new(AtomicI64::new(0));
         let stream_decoder = StreamDecoder {
             decoder: video_decoder,
             video_stream_index,
             elapsed_ms_arc: Arc::clone(&elapsed_ms_arc),
             frame_index: 0,
             elapsed_ms: 0,
+            time_base: video_stream.time_base().clone(),
             input_context,
             player_state: Arc::clone(&player_state),
             scaler: frame_scaler,
@@ -550,9 +561,8 @@ impl StreamDecoder {
                 self.decoder.send_packet(&packet)?;
                 if let Some(dts) = packet.dts() {
                     self.elapsed_ms = timestamp_to_millisec(dts, stream.time_base());
-                    if let Ok(mut elapsed_ms_arc) = self.elapsed_ms_arc.lock() {
-                        *elapsed_ms_arc = self.elapsed_ms;
-                    }
+                    self.elapsed_ms_arc
+                        .store(self.elapsed_ms, Ordering::Relaxed)
                 }
             }
         } else {
@@ -612,7 +622,6 @@ impl StreamDecoder {
         }
     }
 }
-
 
 fn video_frame_to_image(frame: Video) -> ColorImage {
     let size = [frame.width() as usize, frame.height() as usize];
