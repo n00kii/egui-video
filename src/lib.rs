@@ -18,9 +18,10 @@ use ffmpeg::{rescale, Rational, Rescale};
 use rand::{thread_rng, Rng};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioFormat, AudioSpecDesired};
 
+use parking_lot::Mutex;
 use std::io::prelude::*;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use tempfile::NamedTempFile;
@@ -56,20 +57,21 @@ pub struct AudioDecoder {
     resampler: software::resampling::Context,
     audio_sample_producer: AudioSampleProducer,
     audio_input_context: Input,
-    player_state: MemorySync<PlayerState>,
-    audio_stream_time_base: Rational,
+    player_state: Cache<PlayerState>,
 }
 
 pub struct VideoStream {
     pub stream_decoder: Arc<Mutex<StreamDecoder>>,
     pub audio_decoder: Option<Arc<Mutex<AudioDecoder>>>,
-    pub player_state: MemorySync<PlayerState>,
+    pub player_state: Cache<PlayerState>,
     pub framerate: f64,
     texture_options: TextureOptions,
     texture_handle: TextureHandle,
     pub height: u32,
     pub width: u32,
     frame_timer: Timer,
+    audio_timer: Timer,
+    audio_thread: Option<Guard>,
     frame_thread: Option<Guard>,
     ctx_ref: egui::Context,
     pub looping: bool,
@@ -95,45 +97,47 @@ pub enum PlayerState {
 pub struct StreamDecoder {
     video_decoder: ffmpeg::decoder::Video,
     video_stream_index: usize,
-    player_state: MemorySync<PlayerState>,
+    player_state: Cache<PlayerState>,
     input_context: Input,
     video_elapsed_ms: i64,
     scaler: software::scaling::Context,
     video_elapsed_ms_arc: Arc<AtomicI64>,
     audio_elapsed_ms_arc: Arc<AtomicI64>,
-    video_stream_time_base: Rational,
 }
 
 #[derive(Clone)]
-pub struct MemorySync<T: Copy> {
-    previous_value: T,
+pub struct Cache<T: Copy> {
+    cached_value: T,
     raw_value: Arc<Mutex<T>>,
 }
 
-impl<T: Copy> MemorySync<T> {
+impl<T: Copy> Cache<T> {
     fn set(&mut self, value: T) {
-        self.previous_value = value;
-        **self.raw_value.lock().as_mut().unwrap() = value
+        self.cached_value = value;
+        *self.raw_value.lock() = value
     }
     pub fn get(&mut self) -> T {
-        self.try_update().unwrap_or(self.previous_value)
+        self.try_update_cache().unwrap_or(self.cached_value)
     }
-    fn update(&mut self) -> T {
-        self.previous_value = *self.raw_value.lock().unwrap();
-        self.previous_value
+    fn update_cache(&mut self) {
+        self.cached_value = *self.raw_value.lock();
     }
-    fn try_update(&mut self) -> Option<T> {
-        if let Ok(new_value) = self.raw_value.try_lock() {
-            self.previous_value = *new_value;
-            Some(self.previous_value)
+    fn get_updated(&mut self) -> T {
+        self.update_cache();
+        self.cached_value
+    }
+    fn try_update_cache(&mut self) -> Option<T> {
+        if let Some(new_value) = self.raw_value.try_lock() {
+            self.cached_value = *new_value;
+            Some(self.cached_value)
         } else {
             None
         }
     }
     fn new(value: T) -> Self {
         Self {
-            previous_value: value,
-            raw_value: Arc::new(Mutex::new(value))
+            cached_value: value,
+            raw_value: Arc::new(Mutex::new(value)),
         }
     }
 }
@@ -158,7 +162,20 @@ impl VideoStream {
             format_duration(Duration::milliseconds(self.duration_ms))
         )
     }
-
+    fn try_reset(&mut self, start_playing: bool) {
+        if let Some(mut stream_decoder) = self.stream_decoder.try_lock() {
+            stream_decoder.reset(true);
+        }
+        if let Some(mut audio_decoder) = self.audio_decoder.as_mut().and_then(|a| a.try_lock()) {
+            audio_decoder.reset(true);
+        }
+    }
+    fn reset(&mut self, start_playing: bool) {
+        self.stream_decoder.lock().reset(start_playing);
+        if let Some(audio_decoder) = self.audio_decoder.as_mut() {
+            audio_decoder.lock().reset(start_playing);
+        }
+    }
     fn set_state(&mut self, new_state: PlayerState) {
         self.player_state.set(new_state)
     }
@@ -188,10 +205,10 @@ impl VideoStream {
         let mut player_state = self.player_state.clone();
         let wait_duration = Duration::milliseconds((1000. / self.framerate) as i64);
         let duration_ms = self.duration_ms;
-        let timer_guard = self.frame_timer.schedule_repeating(wait_duration, move || {
+        let frame_timer_guard = self.frame_timer.schedule_repeating(wait_duration, move || {
             ctx.request_repaint();
-            let mut stream_decoder = stream_decoder.lock().unwrap();
-            let player_state = player_state.update();
+            let mut stream_decoder = stream_decoder.lock();
+            let player_state = player_state.get_updated();
 
             if player_state == PlayerState::Playing {
                 match stream_decoder.recieve_next_packet_until_video_frame() {
@@ -203,11 +220,7 @@ impl VideoStream {
             } else if let PlayerState::Seeking(seek_frac) = player_state {
                 let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
                 let seeking_forward = target_ms > stream_decoder.video_elapsed_ms;
-                // dbg!(stream_decoder.video_decoder.time_base(), stream_decoder.video_stream_time_base);
-                // let target_ts =
-                //     millisec_to_timestamp(target_ms, stream_decoder.video_decoder.time_base());
-                // let scaled_target_ts =
-                //     target_ts.rescale(stream_decoder.video_stream_time_base, rescale::TIME_BASE);
+                
                 let target_ts = target_ms.rescale((1, 1000), rescale::TIME_BASE);
 
                 if let Err(e) = stream_decoder.input_context.seek(target_ts, ..target_ts) {
@@ -247,26 +260,21 @@ impl VideoStream {
                 };
             }
         });
-        self.frame_thread = Some(timer_guard);
         if let Some(audio_decoder) = self.audio_decoder.as_ref() {
             self.audio_device.resume();
             let audio_decoder = Arc::clone(&audio_decoder);
             let mut player_state = self.player_state.clone();
-            std::thread::spawn(move || loop {
-                let player_state = player_state.update();
-                let mut audio_decoder = audio_decoder.lock().unwrap();
+            let audio_timer_guard = self.audio_timer.schedule_repeating(Duration::zero(), move || {
+
+                let player_state = player_state.get_updated();
+                let mut audio_decoder = audio_decoder.lock();
                 if player_state == PlayerState::Playing {
-                    match audio_decoder.recieve_next_packet_until_audio_frame() {
-                        Ok(frame) => {
-                            // texture_handle.set(frame, texture_options);
-                        }
-                        _ => (),
-                    }
+                   let _ = audio_decoder.recieve_next_packet_until_audio_frame();
                 } else if let PlayerState::Seeking(seek_frac) = player_state {
                     let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
                     let seeking_forward = target_ms > audio_decoder.audio_elapsed_ms;
                     let target_ts = target_ms.rescale((1, 1000), rescale::TIME_BASE);
-
+    
                     if let Err(e) = audio_decoder
                         .audio_input_context
                         .seek(target_ts, ..target_ts)
@@ -278,10 +286,6 @@ impl VideoStream {
                             audio_decoder.player_state.set(PlayerState::EndOfFile);
                         } else if seek_frac > 0. {
                             // // this drop frame loop lets us refresh until current_ts is accurate
-                            dbg!(
-                                (audio_decoder.audio_elapsed_ms as f64 / duration_ms as f64),
-                                seek_frac
-                            );
                             if !seeking_forward {
                                 while (audio_decoder.audio_elapsed_ms as f64 / duration_ms as f64)
                                     > seek_frac as f64
@@ -289,7 +293,7 @@ impl VideoStream {
                                     audio_decoder.drop_frames();
                                 }
                             }
-
+    
                             // this drop frame loop drops frames until we are at desired
                             while (audio_decoder.audio_elapsed_ms as f64 / duration_ms as f64)
                                 < seek_frac as f64
@@ -297,25 +301,19 @@ impl VideoStream {
                                 audio_decoder.drop_frames();
                             }
 
-                            // // frame preview
-                            // match audio_decoder.recieve_next_packet_until_audio_frame() {
-                            //     Ok(frame) => {
-                            //         // texture_handle.set(frame, texture_options);
-                            //     }
-                            //     _ => (),
-                            // }
                         }
                     };
                 }
             });
+            self.frame_thread = Some(frame_timer_guard);
+            self.audio_thread = Some(audio_timer_guard);
         }
     }
 
     pub fn start(&mut self) {
         self.frame_thread = None;
-        if let Ok(mut stream_decoder) = self.stream_decoder.lock() {
-            stream_decoder.reset(true);
-        }
+        self.audio_thread = None;
+        self.reset(true);
         self.spawn_timer();
     }
 
@@ -333,32 +331,24 @@ impl VideoStream {
         } else {
             self.elapsed_ms = elapsed_ms_arc
         }
-        // }
 
-        // if let Ok(player_state) = self.player_state.try_lock().as_deref_mut() {
-            
-            if let Ok(mut stream_decoder) = self.stream_decoder.try_lock() {
-                match self.player_state.get() {
-                    PlayerState::EndOfFile => {
-                        if self.looping {
-                            reset_stream = true;
-                        } else {
-                            self.frame_thread = None;
-                            self.player_state.set(PlayerState::Stopped);
-                        }
-                    }
-                    PlayerState::Stopped => {
+            match self.player_state.get() {
+                PlayerState::EndOfFile => {
+                    if self.looping {
+                        reset_stream = true;
+                    } else {
                         self.frame_thread = None;
+                        self.player_state.set(PlayerState::Stopped);
                     }
-                    _ => (),
                 }
+                PlayerState::Stopped => {
+                    self.frame_thread = None;
+                }
+                _ => (),
             }
-        // }
 
         if reset_stream {
-            if let Ok(mut stream_decoder) = self.stream_decoder.try_lock() {
-                stream_decoder.reset(true);
-            }
+            self.reset(true);
         }
     }
 
@@ -383,18 +373,9 @@ impl VideoStream {
 
     fn render_ui(&mut self, ui: &mut Ui, playback_response: &Response) -> Option<Rect> {
         let hovered = ui.rect_contains_pointer(playback_response.rect);
-        let currently_seeking = matches!(
-            self.player_state.get(),
-            (PlayerState::Seeking(_))
-        );
-        let is_stopped = matches!(
-            self.player_state.get(),
-            (PlayerState::Stopped)
-        );
-        let is_paused = matches!(
-            self.player_state.get(),
-            (PlayerState::Paused)
-        );
+        let currently_seeking = matches!(self.player_state.get(), (PlayerState::Seeking(_)));
+        let is_stopped = matches!(self.player_state.get(), (PlayerState::Stopped));
+        let is_paused = matches!(self.player_state.get(), (PlayerState::Paused));
 
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
             playback_response.id.with("seekbar_anim"),
@@ -406,19 +387,17 @@ impl VideoStream {
             let mut reset_stream = false;
             let mut start_stream = false;
             // if let Ok(current_state) =  {
-                match self.player_state.update() {
-                    PlayerState::Stopped => start_stream = true,
-                    PlayerState::EndOfFile => reset_stream = true,
-                    PlayerState::Paused => self.player_state.set(PlayerState::Playing),
-                    PlayerState::Playing => self.player_state.set(PlayerState::Paused),
-                    _ => (),
-                }
+            match self.player_state.get_updated() {
+                PlayerState::Stopped => start_stream = true,
+                PlayerState::EndOfFile => reset_stream = true,
+                PlayerState::Paused => self.player_state.set(PlayerState::Playing),
+                PlayerState::Playing => self.player_state.set(PlayerState::Paused),
+                _ => (),
+            }
             // }
 
             if reset_stream {
-                if let Ok(mut stream_decoder) = self.stream_decoder.lock() {
-                    stream_decoder.reset(true)
-                }
+                self.reset(true);
             } else if start_stream {
                 self.start();
             }
@@ -428,12 +407,11 @@ impl VideoStream {
             let seekbar_width_offset = 20.;
             let fullseekbar_width = playback_response.rect.width() - seekbar_width_offset;
 
-            let seekbar_width =
-                if let (PlayerState::Seeking(h)) = self.player_state.get(){
-                    fullseekbar_width * h
-                } else {
-                    fullseekbar_width * self.duration_frac()
-                };
+            let seekbar_width = if let (PlayerState::Seeking(h)) = self.player_state.get() {
+                fullseekbar_width * h
+            } else {
+                fullseekbar_width * self.duration_frac()
+            };
 
             let seekbar_offset = 20.;
             let seekbar_pos = playback_response.rect.left_bottom()
@@ -469,14 +447,12 @@ impl VideoStream {
                         / fullseekbar_width;
                     if ui.ctx().input().pointer.primary_down() {
                         if is_stopped {
-                            if let Ok(mut stream_decoder) = self.stream_decoder.lock() {
-                                stream_decoder.reset(true);
-                            }
+                            // if let Ok(mut stream_decoder) = self.stream_decoder.lock() {
+                            self.reset(true);
                             self.spawn_timer();
                         }
                         if !currently_seeking {
-                            self.preseek_player_state =
-                                Some(self.player_state.update());
+                            self.preseek_player_state = Some(self.player_state.get_updated());
                         }
                         self.set_state(PlayerState::Seeking(seek_frac));
                         self.last_seek_ms =
@@ -531,7 +507,7 @@ impl VideoStream {
             let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::none());
 
             let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
-            let seekbar_color = Color32::RED.linear_multiply(seekbar_anim_frac);
+            let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
             ui.painter().add(shadow_mesh);
 
@@ -600,7 +576,7 @@ impl VideoStream {
         let mut audio_device = AudioPlayCallback::init().unwrap();
         let audio_elapsed_ms_arc = arc_atomic_i64();
         let video_elapsed_ms_arc = arc_atomic_i64();
-        let player_state = MemorySync::new(PlayerState::Stopped);
+        let player_state = Cache::new(PlayerState::Stopped);
 
         let audio_decoder = if let Some(audio_stream) = audio_stream.as_ref() {
             let audio_input_context = input(&input_path)?;
@@ -627,7 +603,6 @@ impl VideoStream {
                 audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
                 video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
                 audio_elapsed_ms: 0,
-                audio_stream_time_base: audio_stream.time_base().clone(),
                 audio_sample_producer,
                 audio_input_context,
                 audio_decoder,
@@ -662,7 +637,6 @@ impl VideoStream {
             audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
             video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
             video_elapsed_ms: 0,
-            video_stream_time_base: video_stream.time_base().clone(),
             input_context,
             player_state: player_state.clone(),
             scaler: frame_scaler,
@@ -677,8 +651,10 @@ impl VideoStream {
             texture_options,
             framerate,
             frame_timer: Timer::new(),
+            audio_timer: Timer::new(),
             preseek_player_state: None,
             frame_thread: None,
+            audio_thread: None,
             texture_handle,
             player_state,
             video_elapsed_ms_arc,
@@ -706,9 +682,10 @@ impl VideoStream {
         match self
             .stream_decoder
             .lock()
-            .and_then(|mut s| Ok(s.recieve_next_packet_until_video_frame()))
+            .recieve_next_packet_until_video_frame()
+            // .and_then(|mut s| Ok(s.))
         {
-            Ok(Ok(first_frame)) => {
+            Ok(first_frame) => {
                 let texture_handle =
                     self.ctx_ref
                         .load_texture("vidstream", first_frame, self.texture_options);
@@ -716,8 +693,7 @@ impl VideoStream {
                 self.texture_handle = texture_handle;
                 Ok(texture_handle_clone)
             }
-            Ok(Err(e)) => Err(e),
-            _ => unreachable!(),
+            Err(e) => Err(e),
         }
     }
 }
@@ -775,7 +751,6 @@ impl StreamDecoder {
         let _ = self.input_context.seek(beginning_seek, ..beginning_seek);
         self.video_decoder.flush();
         if start_playing {
-
             self.player_state.set(PlayerState::Playing);
         }
     }
@@ -940,6 +915,17 @@ impl AudioDecoder {
             self.audio_decoder.send_eof()?;
         }
         Ok(())
+    }
+    fn reset(&mut self, start_playing: bool) {
+        let beginning: i64 = 0;
+        let beginning_seek = beginning.rescale((1, 1), rescale::TIME_BASE);
+        let _ = self
+            .audio_input_context
+            .seek(beginning_seek, ..beginning_seek);
+        self.audio_decoder.flush();
+        if start_playing {
+            self.player_state.set(PlayerState::Playing);
+        }
     }
 }
 
