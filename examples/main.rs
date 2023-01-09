@@ -60,7 +60,7 @@ impl eframe::App for App {
                 ui.label(format!("frame rate: {}", streamer.framerate));
                 ui.label(format!("size: {}x{}", streamer.width, streamer.height));
                 ui.label(streamer.duration_text());
-                ui.label(format!("{:?}", streamer.player_state.try_lock().as_deref()));
+                ui.label(format!("{:?}", streamer.player_state.get()));
 
                 ui.checkbox(&mut streamer.looping, "loop");
                 ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=1.));

@@ -14,6 +14,9 @@ image = "0.24.4"
 timer = "0.2.0"
 chrono = "0.4.22"
 tempfile = "3.3.0"
+sdl2 = { version = "0.35.2", features = ["bundled"]}
+ringbuf = "0.3.1"
+rand = "0.8.5"
 
 [dev-dependencies]
 rfd = "0.10.0"
