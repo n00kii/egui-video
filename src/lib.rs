@@ -61,7 +61,6 @@ pub struct Player {
     pub looping: bool,
     pub audio_volume: Cache<f32>,
     pub max_audio_volume: f32,
-    audio_device: AudioDevice<AudioStreamerCallback>,
     duration_ms: i64,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
@@ -203,7 +202,6 @@ impl Player {
         self.frame_thread = Some(frame_timer_guard);
 
         if let Some(audio_decoder) = self.audio_streamer.as_ref() {
-            self.audio_device.resume();
             let audio_decoder = Arc::clone(&audio_decoder);
             let audio_timer_guard =
                 self.audio_timer
@@ -533,16 +531,16 @@ impl Player {
         }
     }
 
-    pub fn new_from_bytes(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_bytes: &[u8]) -> Result<Self> {
+    pub fn new_from_bytes(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_bytes: &[u8]) -> Result<(Self, AudioDevice<AudioStreamerCallback>)> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
-        let mut slf = Self::new(ctx, audio_sys, &path)?;
+        let (mut slf, audio_device) = Self::new(ctx, audio_sys, &path)?;
         slf.temp_file = Some(file);
-        Ok(slf)
+        Ok((slf, audio_device))
     }
 
-    pub fn new(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_path: &String) -> Result<Self> {
+    pub fn new(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_path: &String) -> Result<(Self, AudioDevice<AudioStreamerCallback>)> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -578,7 +576,7 @@ impl Player {
             )?;
 
             audio_device.lock().sample_consumer = Some(audio_sample_consumer);
-
+            audio_device.resume();
             Some(AudioStreamer {
                 player_state: player_state.clone(),
                 _video_elapsed_ms: video_elapsed_ms.clone(),
@@ -623,7 +621,6 @@ impl Player {
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
         let mut streamer = Self {
-            audio_device,
             audio_streamer: audio_decoder.map(|ad| Arc::new(Mutex::new(ad))),
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
@@ -654,7 +651,7 @@ impl Player {
             }
         }
 
-        Ok(streamer)
+        Ok((streamer, audio_device))
     }
 
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
@@ -892,7 +889,7 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
-struct AudioStreamerCallback {
+pub struct AudioStreamerCallback {
     sample_consumer: Option<AudioSampleConsumer>,
     volume: Cache<f32>,
 }

@@ -1,7 +1,8 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit};
-use egui_video::Player;
+use egui_video::{Player, AudioStreamerCallback};
+use sdl2::audio::AudioDevice;
 fn main() {
     ffmpeg::init().unwrap();
     eframe::run_native(
@@ -12,6 +13,7 @@ fn main() {
 }
 struct App {
     audio_sys: sdl2::AudioSubsystem,
+    audio_device: Option<AudioDevice<AudioStreamerCallback>>,
     media_path: String,
     stream_size_scale: f32,
     video_stream: Option<Player>,
@@ -21,6 +23,7 @@ impl Default for App {
     fn default() -> Self {
         Self {
             audio_sys: sdl2::init().unwrap().audio().unwrap(),
+            audio_device: None,
             media_path: String::new(),
             stream_size_scale: 1.,
             video_stream: None,
@@ -43,7 +46,11 @@ impl eframe::App for App {
             );
 
             if ui
-                .interact(tedit_resp.rect, tedit_resp.id.with("click_sense"), Sense::click())
+                .interact(
+                    tedit_resp.rect,
+                    tedit_resp.id.with("click_sense"),
+                    Sense::click(),
+                )
                 .clicked()
             {
                 if let Some(path_buf) = rfd::FileDialog::new().pick_file() {
@@ -52,7 +59,10 @@ impl eframe::App for App {
             }
             if ui.button("load").clicked() {
                 match Player::new(ctx, &self.audio_sys, &self.media_path.replace("\"", "")) {
-                    Ok(video_streamer) => self.video_stream = Some(video_streamer),
+                    Ok((video_streamer, audio_device)) => {
+                        self.video_stream = Some(video_streamer);
+                        self.audio_device = Some(audio_device)
+                    }
                     Err(e) => println!("failed to make stream: {e}"),
                 }
             }
