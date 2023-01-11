@@ -1,8 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit};
-use egui_video::{Player, AudioStreamerCallback};
-use sdl2::audio::AudioDevice;
+use egui_video::{Player, AudioStreamerCallback, AudioStreamerDevice};
 fn main() {
     ffmpeg::init().unwrap();
     eframe::run_native(
@@ -12,8 +11,7 @@ fn main() {
     )
 }
 struct App {
-    audio_sys: sdl2::AudioSubsystem,
-    audio_device: Option<AudioDevice<AudioStreamerCallback>>,
+    audio_device: AudioStreamerDevice,
     media_path: String,
     stream_size_scale: f32,
     video_stream: Option<Player>,
@@ -22,8 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_sys: sdl2::init().unwrap().audio().unwrap(),
-            audio_device: None,
+            audio_device: AudioStreamerCallback::init(&sdl2::init().unwrap().audio().unwrap()).unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             video_stream: None,
@@ -58,10 +55,10 @@ impl eframe::App for App {
                 }
             }
             if ui.button("load").clicked() {
-                match Player::new(ctx, &self.audio_sys, &self.media_path.replace("\"", "")) {
-                    Ok((video_streamer, audio_device)) => {
+                match Player::new(ctx, &mut self.audio_device, &self.media_path.replace("\"", "")) {
+                    Ok(video_streamer) => {
                         self.video_stream = Some(video_streamer);
-                        self.audio_device = Some(audio_device)
+                        // self.audio_device = Some(audio_device)
                     }
                     Err(e) => println!("failed to make stream: {e}"),
                 }

@@ -39,6 +39,7 @@ fn format_duration(dur: Duration) -> String {
 }
 
 const _TEST_BYTES: &[u8] = include_bytes!("../cat.gif");
+pub type AudioStreamerDevice = AudioDevice<AudioStreamerCallback>;
 type AudioSampleProducer =
     ringbuf::Producer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 type AudioSampleConsumer =
@@ -531,16 +532,16 @@ impl Player {
         }
     }
 
-    pub fn new_from_bytes(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_bytes: &[u8]) -> Result<(Self, AudioDevice<AudioStreamerCallback>)> {
+    pub fn new_from_bytes(ctx: &egui::Context, audio_device: &mut AudioStreamerDevice, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
-        let (mut slf, audio_device) = Self::new(ctx, audio_sys, &path)?;
+        let mut slf = Self::new(ctx, audio_device, &path)?;
         slf.temp_file = Some(file);
-        Ok((slf, audio_device))
+        Ok(slf)
     }
 
-    pub fn new(ctx: &egui::Context, audio_sys: &sdl2::AudioSubsystem, input_path: &String) -> Result<(Self, AudioDevice<AudioStreamerCallback>)> {
+    pub fn new(ctx: &egui::Context, audio_device: &mut AudioStreamerDevice, input_path: &String) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -551,7 +552,7 @@ impl Player {
 
         let audio_volume = Cache::new(max_audio_volume / 2.);
         let audio_stream = input_context.streams().best(Type::Audio);
-        let mut audio_device = AudioStreamerCallback::init(audio_sys, audio_volume.clone()).unwrap();
+        // let mut audio_device = AudioStreamerCallback::init(audio_sys).unwrap();
 
         let video_elapsed_ms = Cache::new(0);
         let audio_elapsed_ms = Cache::new(0);
@@ -575,6 +576,7 @@ impl Player {
                 audio_device.spec().freq as u32,
             )?;
 
+            audio_device.lock().audio_volume = audio_volume.clone();
             audio_device.lock().sample_consumer = Some(audio_sample_consumer);
             audio_device.resume();
             Some(AudioStreamer {
@@ -651,7 +653,7 @@ impl Player {
             }
         }
 
-        Ok((streamer, audio_device))
+        Ok(streamer)
     }
 
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
@@ -891,7 +893,7 @@ impl AsFfmpegSample for AudioFormat {
 
 pub struct AudioStreamerCallback {
     sample_consumer: Option<AudioSampleConsumer>,
-    volume: Cache<f32>,
+    audio_volume: Cache<f32>,
 }
 
 impl AudioCallback for AudioStreamerCallback {
@@ -900,7 +902,7 @@ impl AudioCallback for AudioStreamerCallback {
         if let Some(sample_consumer) = self.sample_consumer.as_mut() {
             for x in output.iter_mut() {
                 match sample_consumer.pop() {
-                    Some(sample) => *x = sample * self.volume.get(),
+                    Some(sample) => *x = sample * self.audio_volume.get(),
                     None => *x = 0.,
                 }
             }
@@ -909,7 +911,7 @@ impl AudioCallback for AudioStreamerCallback {
 }
 
 impl AudioStreamerCallback {
-    fn init(audio_sys: &sdl2::AudioSubsystem, audio_volume: Cache<f32>) -> Result<AudioDevice<Self>, String> {
+    pub fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice<Self>, String> {
         // let sdl_ctx = sdl2::init()?;
         // let audio_sys = sdl_ctx.audio()?;
 
@@ -921,7 +923,7 @@ impl AudioStreamerCallback {
 
         let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioStreamerCallback {
             sample_consumer: None,
-            volume: audio_volume,
+            audio_volume: Cache::new(0.),
         })?;
 
         Ok(device)
