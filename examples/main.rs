@@ -11,6 +11,7 @@ fn main() {
     )
 }
 struct App {
+    audio_sys: sdl2::AudioSubsystem,
     media_path: String,
     stream_size_scale: f32,
     video_stream: Option<Player>,
@@ -19,6 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            audio_sys: sdl2::init().unwrap().audio().unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             video_stream: None,
@@ -49,7 +51,7 @@ impl eframe::App for App {
                 }
             }
             if ui.button("load").clicked() {
-                match Player::new(ctx, &self.media_path.replace("\"", "")) {
+                match Player::new(ctx, &self.audio_sys, &self.media_path.replace("\"", "")) {
                     Ok(video_streamer) => self.video_stream = Some(video_streamer),
                     Err(e) => println!("failed to make stream: {e}"),
                 }
