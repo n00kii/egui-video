@@ -1,7 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit};
-use egui_video::VideoStream;
+use egui_video::Player;
 fn main() {
     ffmpeg::init().unwrap();
     eframe::run_native(
@@ -13,7 +13,7 @@ fn main() {
 struct App {
     media_path: String,
     stream_size_scale: f32,
-    video_stream: Option<VideoStream>,
+    video_stream: Option<Player>,
 }
 
 impl Default for App {
@@ -49,7 +49,7 @@ impl eframe::App for App {
                 }
             }
             if ui.button("load").clicked() {
-                match VideoStream::new(ctx, &self.media_path.replace("\"", "")) {
+                match Player::new(ctx, &self.media_path.replace("\"", "")) {
                     Ok(video_streamer) => self.video_stream = Some(video_streamer),
                     Err(e) => println!("failed to make stream: {e}"),
                 }
