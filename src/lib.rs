@@ -49,9 +49,8 @@ type AudioSampleConsumer =
     ringbuf::Consumer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 
 pub struct AudioDecoder {
-    video_elapsed_ms_arc: Arc<AtomicI64>,
-    audio_elapsed_ms_arc: Arc<AtomicI64>,
-    audio_elapsed_ms: i64,
+    video_elapsed_ms: Cache<i64>,
+    audio_elapsed_ms: Cache<i64>,
     audio_stream_index: usize,
     audio_decoder: ffmpeg::decoder::Audio,
     resampler: software::resampling::Context,
@@ -77,12 +76,11 @@ pub struct VideoStream {
     pub looping: bool,
     audio_device: AudioDevice<AudioPlayCallback>,
     duration_ms: i64,
-    elapsed_ms: i64,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
     temp_file: Option<NamedTempFile>,
-    video_elapsed_ms_arc: Arc<AtomicI64>,
-    audio_elapsed_ms_arc: Arc<AtomicI64>,
+    video_elapsed_ms: Cache<i64>,
+    audio_elapsed_ms: Cache<i64>,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -99,15 +97,15 @@ pub struct StreamDecoder {
     video_stream_index: usize,
     player_state: Cache<PlayerState>,
     input_context: Input,
-    video_elapsed_ms: i64,
+    video_elapsed_ms: Cache<i64>,
+    audio_elapsed_ms: Cache<i64>,
     scaler: software::scaling::Context,
-    video_elapsed_ms_arc: Arc<AtomicI64>,
-    audio_elapsed_ms_arc: Arc<AtomicI64>,
 }
 
 #[derive(Clone)]
 pub struct Cache<T: Copy> {
     cached_value: T,
+    override_value: Option<T>,
     raw_value: Arc<Mutex<T>>,
 }
 
@@ -117,6 +115,9 @@ impl<T: Copy> Cache<T> {
         *self.raw_value.lock() = value
     }
     pub fn get(&mut self) -> T {
+        self.override_value.unwrap_or(self.get_true())
+    }
+    pub fn get_true(&mut self) -> T {
         self.try_update_cache().unwrap_or(self.cached_value)
     }
     fn update_cache(&mut self) {
@@ -136,6 +137,7 @@ impl<T: Copy> Cache<T> {
     }
     fn new(value: T) -> Self {
         Self {
+            override_value: None,
             cached_value: value,
             raw_value: Arc::new(Mutex::new(value)),
         }
@@ -143,32 +145,23 @@ impl<T: Copy> Cache<T> {
 }
 
 const AV_TIME_BASE_RATIONAL: Rational = Rational(1, AV_TIME_BASE);
+const MILLISEC_TIME_BASE: Rational = Rational(1, 1000);
 
 fn timestamp_to_millisec(timestamp: i64, time_base: Rational) -> i64 {
-    (timestamp as f64 * (time_base.numerator() as f64) / (time_base.denominator() as f64) * 1000.)
-        as i64
+    timestamp.rescale(time_base, MILLISEC_TIME_BASE)
 }
 
 fn millisec_to_timestamp(millisec: i64, time_base: Rational) -> i64 {
-    (millisec as f64 * (time_base.denominator() as f64) / (time_base.numerator() as f64) / 0.001)
-        as i64
+    millisec.rescale(MILLISEC_TIME_BASE, time_base)
 }
 
 impl VideoStream {
-    pub fn duration_text(&self) -> String {
+    pub fn duration_text(&mut self) -> String {
         format!(
             "{} / {}",
-            format_duration(Duration::milliseconds(self.elapsed_ms)),
+            format_duration(Duration::milliseconds(self.video_elapsed_ms.get())),
             format_duration(Duration::milliseconds(self.duration_ms))
         )
-    }
-    fn try_reset(&mut self, start_playing: bool) {
-        if let Some(mut stream_decoder) = self.stream_decoder.try_lock() {
-            stream_decoder.reset(true);
-        }
-        if let Some(mut audio_decoder) = self.audio_decoder.as_mut().and_then(|a| a.try_lock()) {
-            audio_decoder.reset(true);
-        }
     }
     fn reset(&mut self, start_playing: bool) {
         self.stream_decoder.lock().reset(start_playing);
@@ -188,10 +181,9 @@ impl VideoStream {
     pub fn stop(&mut self) {
         self.set_state(PlayerState::Stopped)
     }
-    fn duration_frac(&self) -> f32 {
-        self.elapsed_ms as f32 / self.duration_ms as f32
+    fn duration_frac(&mut self) -> f32 {
+        self.video_elapsed_ms.get() as f32 / self.duration_ms as f32
     }
-
     pub fn cleanup(self) {
         drop(self)
     }
@@ -219,9 +211,9 @@ impl VideoStream {
                 }
             } else if let PlayerState::Seeking(seek_frac) = player_state {
                 let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
-                let seeking_forward = target_ms > stream_decoder.video_elapsed_ms;
+                let seeking_forward = target_ms > stream_decoder.video_elapsed_ms.get();
                 
-                let target_ts = target_ms.rescale((1, 1000), rescale::TIME_BASE);
+                let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);//target_ms.rescale((1, 1000), rescale::TIME_BASE);
 
                 if let Err(e) = stream_decoder.input_context.seek(target_ts, ..target_ts) {
                     dbg!(e);
@@ -229,12 +221,11 @@ impl VideoStream {
                     if seek_frac >= 0.99 {
                         // prevent inifinite loop near end of stream
                         stream_decoder.player_state.set(PlayerState::EndOfFile)
-                        // *stream_decoder.player_state.lock().as_deref_mut().unwrap() =
-                        //     PlayerState::EndOfFile;
+
                     } else if seek_frac > 0. {
                         // this drop frame loop lets us refresh until current_ts is accurate
                         if !seeking_forward {
-                            while (stream_decoder.video_elapsed_ms as f64 / duration_ms as f64)
+                            while (stream_decoder.video_elapsed_ms.get() as f64 / duration_ms as f64)
                                 > seek_frac as f64
                             {
                                 stream_decoder.drop_frames();
@@ -242,11 +233,10 @@ impl VideoStream {
                         }
 
                         // this drop frame loop drops frames until we are at desired
-                        while (stream_decoder.video_elapsed_ms as f64 / duration_ms as f64)
+                        while (stream_decoder.video_elapsed_ms.get() as f64 / duration_ms as f64)
                             < seek_frac as f64
                         {
                             stream_decoder.drop_frames();
-                            // dbg!(stream_decoder.elapsed_ms as f64 / duration_ms as f64);
                         }
 
                         // frame preview
@@ -272,8 +262,8 @@ impl VideoStream {
                    let _ = audio_decoder.recieve_next_packet_until_audio_frame();
                 } else if let PlayerState::Seeking(seek_frac) = player_state {
                     let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
-                    let seeking_forward = target_ms > audio_decoder.audio_elapsed_ms;
-                    let target_ts = target_ms.rescale((1, 1000), rescale::TIME_BASE);
+                    let seeking_forward = target_ms > audio_decoder.audio_elapsed_ms.get();
+                    let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);//target_ms.rescale((1, 1000), rescale::TIME_BASE);
     
                     if let Err(e) = audio_decoder
                         .audio_input_context
@@ -287,7 +277,7 @@ impl VideoStream {
                         } else if seek_frac > 0. {
                             // // this drop frame loop lets us refresh until current_ts is accurate
                             if !seeking_forward {
-                                while (audio_decoder.audio_elapsed_ms as f64 / duration_ms as f64)
+                                while (audio_decoder.audio_elapsed_ms.get() as f64 / duration_ms as f64)
                                     > seek_frac as f64
                                 {
                                     audio_decoder.drop_frames();
@@ -295,7 +285,7 @@ impl VideoStream {
                             }
     
                             // this drop frame loop drops frames until we are at desired
-                            while (audio_decoder.audio_elapsed_ms as f64 / duration_ms as f64)
+                            while (audio_decoder.audio_elapsed_ms.get() as f64 / duration_ms as f64)
                                 < seek_frac as f64
                             {
                                 audio_decoder.drop_frames();
@@ -319,17 +309,17 @@ impl VideoStream {
 
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
-        let elapsed_ms_arc = self.video_elapsed_ms_arc.load(Ordering::Relaxed);
+        let video_elapsed_ms = self.video_elapsed_ms.get();
         if self.last_seek_ms.is_some() {
             let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-            if elapsed_ms_arc > last_seek_ms || elapsed_ms_arc == 0 {
-                self.elapsed_ms = elapsed_ms_arc;
-                self.last_seek_ms = None
+            if self.video_elapsed_ms.get_true() > last_seek_ms || video_elapsed_ms == 0 {
+                self.video_elapsed_ms.override_value = None;
+                self.last_seek_ms = None;
             } else {
-                self.elapsed_ms = last_seek_ms;
+                self.video_elapsed_ms.override_value = Some(last_seek_ms);
             }
         } else {
-            self.elapsed_ms = elapsed_ms_arc
+            self.video_elapsed_ms.override_value = None;
         }
 
             match self.player_state.get() {
@@ -337,12 +327,12 @@ impl VideoStream {
                     if self.looping {
                         reset_stream = true;
                     } else {
-                        self.frame_thread = None;
                         self.player_state.set(PlayerState::Stopped);
                     }
                 }
                 PlayerState::Stopped => {
                     self.frame_thread = None;
+                    self.audio_thread = None;
                 }
                 _ => (),
             }
@@ -367,7 +357,6 @@ impl VideoStream {
     }
 
     pub fn texture_id(&self) -> TextureId {
-        // self.texture_handle.as_ref().and_then(|h| Some(h.id()))
         self.texture_handle.id()
     }
 
@@ -394,7 +383,6 @@ impl VideoStream {
                 PlayerState::Playing => self.player_state.set(PlayerState::Paused),
                 _ => (),
             }
-            // }
 
             if reset_stream {
                 self.reset(true);
@@ -574,8 +562,10 @@ impl VideoStream {
 
         let audio_stream = input_context.streams().best(Type::Audio);
         let mut audio_device = AudioPlayCallback::init().unwrap();
-        let audio_elapsed_ms_arc = arc_atomic_i64();
-        let video_elapsed_ms_arc = arc_atomic_i64();
+        // let audio_elapsed_ms_arc = arc_atomic_i64();
+        // let video_elapsed_ms_arc = arc_atomic_i64();
+        let video_elapsed_ms = Cache::new(0);
+        let audio_elapsed_ms = Cache::new(0);
         let player_state = Cache::new(PlayerState::Stopped);
 
         let audio_decoder = if let Some(audio_stream) = audio_stream.as_ref() {
@@ -600,9 +590,11 @@ impl VideoStream {
 
             Some(AudioDecoder {
                 player_state: player_state.clone(),
-                audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
-                video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
-                audio_elapsed_ms: 0,
+                video_elapsed_ms: video_elapsed_ms.clone(),
+                audio_elapsed_ms: audio_elapsed_ms.clone(),
+                // audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
+                // video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
+                // audio_elapsed_ms: 0,
                 audio_sample_producer,
                 audio_input_context,
                 audio_decoder,
@@ -634,9 +626,11 @@ impl VideoStream {
         let stream_decoder = StreamDecoder {
             video_decoder,
             video_stream_index,
-            audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
-            video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
-            video_elapsed_ms: 0,
+            audio_elapsed_ms: audio_elapsed_ms.clone(),
+            video_elapsed_ms: video_elapsed_ms.clone(),
+            // audio_elapsed_ms_arc: Arc::clone(&audio_elapsed_ms_arc),
+            // video_elapsed_ms_arc: Arc::clone(&video_elapsed_ms_arc),
+            // video_elapsed_ms: 0,
             input_context,
             player_state: player_state.clone(),
             scaler: frame_scaler,
@@ -657,12 +651,14 @@ impl VideoStream {
             audio_thread: None,
             texture_handle,
             player_state,
-            video_elapsed_ms_arc,
-            audio_elapsed_ms_arc,
+            video_elapsed_ms,
+            audio_elapsed_ms,
+            // video_elapsed_ms_arc,
+            // audio_elapsed_ms_arc,
             width,
             last_seek_ms: None,
             duration_ms,
-            elapsed_ms: 0,
+            // elapsed_ms: 0,
             looping: true,
             height,
             ctx_ref: ctx.clone(),
@@ -720,9 +716,10 @@ impl StreamDecoder {
             if stream.index() == self.video_stream_index {
                 self.video_decoder.send_packet(&packet)?;
                 if let Some(dts) = packet.dts() {
-                    self.video_elapsed_ms = timestamp_to_millisec(dts, stream.time_base());
-                    self.video_elapsed_ms_arc
-                        .store(self.video_elapsed_ms, Ordering::Relaxed)
+                    self.video_elapsed_ms.set(timestamp_to_millisec(dts, stream.time_base()));
+                    // self.video_elapsed_ms = timestamp_to_millisec(dts, stream.time_base());
+                    // self.video_elapsed_ms_arc
+                    //     .store(self.video_elapsed_ms, Ordering::Relaxed)
                 }
             }
         } else {
@@ -771,10 +768,10 @@ impl StreamDecoder {
                 let mut rgb_frame = Video::empty();
                 self.scaler.run(&decoded_frame, &mut rgb_frame)?;
 
-                let audio_elapsed_ms = self.audio_elapsed_ms_arc.load(Ordering::Relaxed);
-                if self.video_elapsed_ms > audio_elapsed_ms {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                // let audio_elapsed_ms = self.audio_elapsed_ms_arc.load(Ordering::Relaxed);
+                // if self.video_elapsed_ms > audio_elapsed_ms {
+                //     std::thread::sleep(std::time::Duration::from_millis(10));
+                // }
 
                 let image = video_frame_to_image(rgb_frame);
                 Ok(image)
@@ -867,11 +864,11 @@ impl AudioDecoder {
                     // std::thread::sleep(std::time::Duration::from_millis(10));
                 }
 
-                let video_elapsed_ms = self.video_elapsed_ms_arc.load(Ordering::Relaxed);
+                // let video_elapsed_ms = self.video_elapsed_ms_arc.load(Ordering::Relaxed);
 
-                if video_elapsed_ms < self.audio_elapsed_ms {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                // if video_elapsed_ms < self.audio_elapsed_ms {
+                //     std::thread::sleep(std::time::Duration::from_millis(10));
+                // }
 
                 self.audio_sample_producer.push_slice(audio_samples);
             }
@@ -906,9 +903,10 @@ impl AudioDecoder {
             if stream.index() == self.audio_stream_index {
                 self.audio_decoder.send_packet(&packet)?;
                 if let Some(dts) = packet.dts() {
-                    self.audio_elapsed_ms = timestamp_to_millisec(dts, stream.time_base());
-                    self.audio_elapsed_ms_arc
-                        .store(self.audio_elapsed_ms, Ordering::Relaxed)
+                    self.audio_elapsed_ms.set(timestamp_to_millisec(dts, stream.time_base()));
+                    // self.audio_elapsed_ms = timestamp_to_millisec(dts, stream.time_base());
+                    // self.audio_elapsed_ms_arc
+                    //     .store(self.audio_elapsed_ms, Ordering::Relaxed)
                 }
             }
         } else {
