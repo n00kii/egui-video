@@ -676,7 +676,7 @@ impl Player {
     }
 }
 
-trait Streamer {
+pub trait Streamer {
     type Frame;
     type ProcessedFrame;
 
