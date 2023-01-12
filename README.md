@@ -7,6 +7,8 @@
 
 plays videos in egui from file path or from bytes
 
+as of now, can't publish as a crate due to me depending on a modified version of `rust-ffmpeg`. until the [relevant 2 year old pr](https://github.com/zmwangx/rust-ffmpeg/pull/85) goes through, you have to specify this as a git dependancy in `Cargo.toml`
+
 ## usage:
 ```rust
 /* called once (top level initialization) */
