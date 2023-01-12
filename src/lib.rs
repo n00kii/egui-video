@@ -1,11 +1,14 @@
+#![warn(missing_docs)]
+//! egui-video
+//! video playback library for [`egui`]
+//! 
 extern crate ffmpeg_next as ffmpeg;
-
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use egui::epaint::Shadow;
 use egui::{
     vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding, Sense,
-    TextureHandle, TextureId, TextureOptions, Ui,
+    TextureHandle, TextureOptions, Ui,
 };
 use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::input::Input;
@@ -16,18 +19,14 @@ use ffmpeg::software;
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Rational, Rescale};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioFormat, AudioSpecDesired};
-
 use parking_lot::Mutex;
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
-
 use tempfile::NamedTempFile;
 use timer::{Guard, Timer};
-
 use ringbuf::SharedRb;
 
-// static AUDIO_SYS: OnceCell<sdl2::Sdl> = OnceCell::new();
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
@@ -38,29 +37,42 @@ fn format_duration(dur: Duration) -> String {
     }
 }
 
-const _TEST_BYTES: &[u8] = include_bytes!("../cat.gif");
+/// The playback device. Needs to be initialized (and kept alive!) for use by a [`Player`].
 pub type AudioStreamerDevice = AudioDevice<AudioStreamerCallback>;
+
 type AudioSampleProducer =
     ringbuf::Producer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 type AudioSampleConsumer =
     ringbuf::Consumer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 
+/// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file. 
+/// Initialize once, and use the [`Player::ui`] or [`Player::ui_at()`] functions to show the playback.
 pub struct Player {
+    /// The video streamer of the player.
     pub video_streamer: Arc<Mutex<VideoStreamer>>,
+    /// The audio streamer of the player. Won't exist unless [`Player::with_audio`] is called and there exists
+    /// a valid audio stream in the file.
     pub audio_streamer: Option<Arc<Mutex<AudioStreamer>>>,
+    /// The state of the player.
     pub player_state: Cache<PlayerState>,
+    /// The framerate of the video stream.
     pub framerate: f64,
     texture_options: TextureOptions,
     texture_handle: TextureHandle,
+    /// The height of the video stream.
     pub height: u32,
+    /// The width of the video stream.
     pub width: u32,
     frame_timer: Timer,
     audio_timer: Timer,
     audio_thread: Option<Guard>,
     frame_thread: Option<Guard>,
     ctx_ref: egui::Context,
+    /// Should the stream loop if it finishes?
     pub looping: bool,
+    /// The volume of the audio stream.
     pub audio_volume: Cache<f32>,
+    /// The maximum volume of the audio stream.
     pub max_audio_volume: f32,
     duration_ms: i64,
     last_seek_ms: Option<i64>,
@@ -72,14 +84,21 @@ pub struct Player {
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
+/// The possible states of a [`Player`].
 pub enum PlayerState {
+    /// No playback.
     Stopped,
+    /// Streams have reached the end of the file.
     EndOfFile,
+    /// User is seeking. Value is from `0` to `1` indicationg target location in the stream.
     Seeking(f32),
+    /// Playback is paused.
     Paused,
+    /// Playback is ongoing.
     Playing,
 }
 
+/// Streams video.
 pub struct VideoStreamer {
     video_decoder: ffmpeg::decoder::Video,
     video_stream_index: usize,
@@ -90,6 +109,7 @@ pub struct VideoStreamer {
     scaler: software::scaling::Context,
 }
 
+/// Streams audio.
 pub struct AudioStreamer {
     _video_elapsed_ms: Cache<i64>,
     audio_elapsed_ms: Cache<i64>,
@@ -102,6 +122,7 @@ pub struct AudioStreamer {
 }
 
 #[derive(Clone)]
+/// Just `Arc<Mutex<T>>` with a local cache.
 pub struct Cache<T: Copy> {
     cached_value: T,
     override_value: Option<T>,
@@ -113,9 +134,13 @@ impl<T: Copy> Cache<T> {
         self.cached_value = value;
         *self.raw_value.lock() = value
     }
+    /// Get the value.
+    /// Priority: Override value -> Try update attempt -> Cached value
     pub fn get(&mut self) -> T {
         self.override_value.unwrap_or(self.get_true())
     }
+    /// Get the "true" value, ignoring override.
+    /// Priority: Try update attempt -> Cached value
     pub fn get_true(&mut self) -> T {
         self.try_update_cache().unwrap_or(self.cached_value)
     }
@@ -155,6 +180,7 @@ fn millisec_to_timestamp(millisec: i64, time_base: Rational) -> i64 {
 }
 
 impl Player {
+    /// A formatted string for displaying the duration of the video stream.
     pub fn duration_text(&mut self) -> String {
         format!(
             "{} / {}",
@@ -171,20 +197,20 @@ impl Player {
     fn set_state(&mut self, new_state: PlayerState) {
         self.player_state.set(new_state)
     }
+    /// Pause the stream.
     pub fn pause(&mut self) {
         self.set_state(PlayerState::Paused)
     }
+    /// Unpause the stream.
     pub fn unpause(&mut self) {
         self.set_state(PlayerState::Playing)
     }
+    /// Stop the stream.
     pub fn stop(&mut self) {
         self.set_state(PlayerState::Stopped)
     }
     fn duration_frac(&mut self) -> f32 {
         self.video_elapsed_ms.get() as f32 / self.duration_ms as f32
-    }
-    pub fn cleanup(self) {
-        drop(self)
     }
     fn spawn_timers(&mut self) {
         let texture_handle = self.texture_handle.clone();
@@ -215,14 +241,14 @@ impl Player {
             self.audio_thread = Some(audio_timer_guard);
         }
     }
-
+    /// Start the stream.
     pub fn start(&mut self) {
         self.frame_thread = None;
         self.audio_thread = None;
         self.reset(true);
         self.spawn_timers();
     }
-
+    /// Processes some internal state, needs to be called every frame.
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
         let video_elapsed_ms = self.video_elapsed_ms.get();
@@ -258,6 +284,7 @@ impl Player {
         }
     }
 
+    /// Draw the player's ui.
     pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> egui::Response {
         let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
         let response = ui.add(image);
@@ -265,15 +292,12 @@ impl Player {
         response
     }
 
+    /// Draw the player's ui with a specific rect.
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
         let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
         let response = ui.put(rect, image);
         self.render_ui(ui, &response);
         response
-    }
-
-    pub fn texture_id(&self) -> TextureId {
-        self.texture_handle.id()
     }
 
     fn render_ui(&mut self, ui: &mut Ui, playback_response: &Response) -> Option<Rect> {
@@ -537,6 +561,7 @@ impl Player {
         }
     }
 
+    /// Create a new [`Player`] from input bytes.
     pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
@@ -545,7 +570,9 @@ impl Player {
         slf.temp_file = Some(file);
         Ok(slf)
     }
-
+    
+    
+    /// Initializes the audio stream (if there is one), required for making a [`Player`] output audio.
     pub fn with_audio(mut self, audio_device: &mut AudioStreamerDevice) -> Result<Self> {
         let audio_input_context = input(&self.input_path)?;
         let audio_stream = audio_input_context.streams().best(Type::Audio);
@@ -587,6 +614,7 @@ impl Player {
         Ok(self)
     }
 
+    /// Create a new [`Player`].
     pub fn new(ctx: &egui::Context, input_path: &String) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
@@ -686,10 +714,13 @@ impl Player {
     }
 }
 
+/// Streams data.
 pub trait Streamer {
+    /// The associated type of frame used for the stream.
     type Frame;
+    /// The associated type after the frame is processed.
     type ProcessedFrame;
-
+    /// Process the streamer's state.
     fn process_state(
         &mut self,
         duration_ms: i64,
@@ -743,13 +774,20 @@ pub trait Streamer {
         }
     }
 
+    /// The stream index.
     fn stream_index(&self) -> usize;
+    /// The elapsed time, in milliseconds.
     fn elapsed_ms(&mut self) -> &mut Cache<i64>;
+    /// The streamer's decoder.
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened;
+    /// The streamer's input context.
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input;
+    /// The streamer's state.
     fn player_state(&mut self) -> &mut Cache<PlayerState>;
-
+    
+    /// Output a frame from the decoder.
     fn decode_frame(&mut self) -> Result<Self::Frame>;
+    /// Ignore the remainder of this packet.
     fn drop_frames(&mut self) {
         if self.decode_frame().is_err() {
             let _ = self.recieve_next_packet();
@@ -757,6 +795,7 @@ pub trait Streamer {
             self.drop_frames();
         }
     }
+    /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
@@ -772,6 +811,7 @@ pub trait Streamer {
         }
         Ok(())
     }
+    /// Reset the stream to its initial state.
     fn reset(&mut self, start_playing: bool) {
         let beginning: i64 = 0;
         let beginning_seek = beginning.rescale((1, 1), rescale::TIME_BASE);
@@ -782,6 +822,7 @@ pub trait Streamer {
             self.player_state().set(PlayerState::Playing);
         }
     }
+    /// Keep recieving packets until a frame can be decoded.
     fn recieve_next_packet_until_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.recieve_next_frame() {
             Ok(frame_result) => Ok(frame_result),
@@ -795,7 +836,9 @@ pub trait Streamer {
             }
         }
     }
+    /// Process a decoded frame.
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame>;
+    /// Decode and process a frame.
     fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
@@ -901,6 +944,7 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
+/// Pipes audio samples to SDL2.
 pub struct AudioStreamerCallback {
     sample_consumer: Option<AudioSampleConsumer>,
     audio_volume: Cache<f32>,
@@ -921,28 +965,25 @@ impl AudioCallback for AudioStreamerCallback {
 }
 
 impl AudioStreamerCallback {
-    pub fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice<Self>, String> {
-        // let sdl_ctx = sdl2::init()?;
-        // let audio_sys = sdl_ctx.audio()?;
-
+    /// Create a new [`AudioStreamerDevice`]. Required for using audio.
+    pub fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
         let audio_spec = AudioSpecDesired {
             freq: Some(44_100),
             channels: Some(2),
             samples: None,
         };
-
         let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioStreamerCallback {
             sample_consumer: None,
             audio_volume: Cache::new(0.),
         })?;
-
         Ok(device)
     }
 }
 
 #[inline]
+// Thanks https://github.com/zmwangx/rust-ffmpeg/issues/72 <3
 // Interpret the audio frame's data as packed (alternating channels, 12121212, as opposed to planar 11112222)
-pub fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T] {
+fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T] {
     if !frame.is_packed() {
         panic!("data is not packed");
     }
@@ -977,10 +1018,9 @@ fn video_frame_to_image(frame: Video) -> ColorImage {
                 .map(|p| Color32::from_rgb(p[0], p[1], p[2])),
         )
     }
-
     ColorImage { size, pixels }
 }
 
-pub fn init() {
-    ffmpeg::init().unwrap();
-}
+// pub fn init() {
+//     ffmpeg::init().unwrap();
+// }
