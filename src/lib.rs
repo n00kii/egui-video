@@ -23,9 +23,11 @@ use parking_lot::Mutex;
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
-use tempfile::NamedTempFile;
 use timer::{Guard, Timer};
 use ringbuf::SharedRb;
+
+#[cfg(feature = "from_bytes")]
+use tempfile::NamedTempFile;
 
 
 fn format_duration(dur: Duration) -> String {
@@ -77,6 +79,7 @@ pub struct Player {
     duration_ms: i64,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
+    #[cfg(feature = "from_bytes")]
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Cache<i64>,
     audio_elapsed_ms: Cache<i64>,
@@ -561,6 +564,7 @@ impl Player {
         }
     }
 
+    #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
     pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
@@ -682,6 +686,7 @@ impl Player {
             looping: true,
             height,
             ctx_ref: ctx.clone(),
+            #[cfg(feature = "from_bytes")]
             temp_file: None,
         };
 
