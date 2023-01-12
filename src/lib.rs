@@ -452,78 +452,82 @@ impl Player {
                 );
             }
 
-            let sound_icon_rect = ui.painter().text(
-                sound_icon_pos,
-                Align2::RIGHT_BOTTOM,
-                sound_icon,
-                icon_font_id.clone(),
-                text_color,
-            );
+            if self.audio_streamer.is_some() {
 
-            if ui.interact(sound_icon_rect, playback_response.id.with("sound_icon_sense"), Sense::click()).clicked() {
-                if self.audio_volume.get() != 0. {
-                    self.audio_volume.set(0.)
-                } else {
-                    self.audio_volume.set(self.max_audio_volume / 2.)
+                let sound_icon_rect = ui.painter().text(
+                    sound_icon_pos,
+                    Align2::RIGHT_BOTTOM,
+                    sound_icon,
+                    icon_font_id.clone(),
+                    text_color,
+                );
+    
+                if ui.interact(sound_icon_rect, playback_response.id.with("sound_icon_sense"), Sense::click()).clicked() {
+                    if self.audio_volume.get() != 0. {
+                        self.audio_volume.set(0.)
+                    } else {
+                        self.audio_volume.set(self.max_audio_volume / 2.)
+                    }
+                }
+    
+                let sound_slider_outer_height = 75.;
+                let sound_slider_margin = 5.;
+                let sound_slider_opacity = 100;
+                let mut sound_slider_rect = sound_icon_rect;
+                sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
+                sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
+    
+                let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
+                let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
+                let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
+                let sound_anim_id = playback_response.id.with("sound_anim");
+                let mut sound_anim_frac: f32 = *ui
+                    .ctx()
+                    .memory()
+                    .data
+                    .get_temp_mut_or_default(sound_anim_id);
+                sound_anim_frac = ui.ctx().animate_bool_with_time(
+                    sound_anim_id,
+                    sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
+                    0.2,
+                );
+                ui.ctx()
+                    .memory()
+                    .data
+                    .insert_temp(sound_anim_id, sound_anim_frac);
+    
+                let sound_slider_bg_color =
+                    Color32::from_black_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
+                let sound_bar_color =
+                    Color32::from_white_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
+                let mut sound_bar_rect = sound_slider_rect;
+                sound_bar_rect.set_top(
+                    sound_bar_rect.bottom()
+                        - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
+                );
+    
+                ui.painter()
+                    .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
+    
+                ui.painter()
+                    .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
+                let sound_slider_resp = ui.interact(
+                    sound_slider_rect,
+                    playback_response.id.with("sound_slider_sense"),
+                    Sense::click_and_drag(),
+                );
+                if sound_anim_frac > 0. && sound_slider_resp.clicked() || sound_slider_resp.dragged() {
+                    if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
+                        let sound_frac = 1.
+                            - ((hover_pos - sound_slider_rect.left_top()).y
+                                / sound_slider_rect.height())
+                            .max(0.)
+                            .min(1.);
+                        self.audio_volume.set(sound_frac * self.max_audio_volume);
+                    }
                 }
             }
 
-            let sound_slider_outer_height = 75.;
-            let sound_slider_margin = 5.;
-            let sound_slider_opacity = 100;
-            let mut sound_slider_rect = sound_icon_rect;
-            sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
-            sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
-
-            let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
-            let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
-            let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
-            let sound_anim_id = playback_response.id.with("sound_anim");
-            let mut sound_anim_frac: f32 = *ui
-                .ctx()
-                .memory()
-                .data
-                .get_temp_mut_or_default(sound_anim_id);
-            sound_anim_frac = ui.ctx().animate_bool_with_time(
-                sound_anim_id,
-                sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
-                0.2,
-            );
-            ui.ctx()
-                .memory()
-                .data
-                .insert_temp(sound_anim_id, sound_anim_frac);
-
-            let sound_slider_bg_color =
-                Color32::from_black_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
-            let sound_bar_color =
-                Color32::from_white_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
-            let mut sound_bar_rect = sound_slider_rect;
-            sound_bar_rect.set_top(
-                sound_bar_rect.bottom()
-                    - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
-            );
-
-            ui.painter()
-                .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
-
-            ui.painter()
-                .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
-            let sound_slider_resp = ui.interact(
-                sound_slider_rect,
-                playback_response.id.with("sound_slider_sense"),
-                Sense::click_and_drag(),
-            );
-            if sound_anim_frac > 0. && sound_slider_resp.clicked() || sound_slider_resp.dragged() {
-                if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
-                    let sound_frac = 1.
-                        - ((hover_pos - sound_slider_rect.left_top()).y
-                            / sound_slider_rect.height())
-                        .max(0.)
-                        .min(1.);
-                    self.audio_volume.set(sound_frac * self.max_audio_volume);
-                }
-            }
 
             
 
@@ -590,7 +594,7 @@ impl Player {
             .best(Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
         let video_stream_index = video_stream.index();
-        let max_audio_volume = 5.;
+        let max_audio_volume = 1.;
 
         let audio_volume = Cache::new(max_audio_volume / 2.);
 
