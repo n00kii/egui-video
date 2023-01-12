@@ -1,6 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
-use egui::{CentralPanel, Grid, Sense, Slider, TextEdit};
+use egui::{CentralPanel, Sense, Slider, TextEdit};
 use egui_video::{AudioStreamerCallback, AudioStreamerDevice, Player};
 fn main() {
     eframe::run_native(
