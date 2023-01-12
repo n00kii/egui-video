@@ -14,7 +14,7 @@ struct App {
     audio_device: AudioStreamerDevice,
     media_path: String,
     stream_size_scale: f32,
-    video_stream: Option<Player>,
+    player: Option<Player>,
 }
 
 impl Default for App {
@@ -23,14 +23,14 @@ impl Default for App {
             audio_device: AudioStreamerCallback::init(&sdl2::init().unwrap().audio().unwrap()).unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
-            video_stream: None,
+            player: None,
         }
     }
 }
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Some(streamer) = self.video_stream.take() {
+        if let Some(streamer) = self.player.take() {
             streamer.cleanup();
         }
     }
@@ -55,42 +55,41 @@ impl eframe::App for App {
                 }
             }
             if ui.button("load").clicked() {
-                match Player::new(ctx, &mut self.audio_device, &self.media_path.replace("\"", "")) {
-                    Ok(video_streamer) => {
-                        self.video_stream = Some(video_streamer);
-                        // self.audio_device = Some(audio_device)
+                match Player::new(ctx, &self.media_path.replace("\"", "")).and_then(|p| p.with_audio(&mut self.audio_device)) {
+                    Ok(player) => {
+                        self.player = Some(player);
                     }
                     Err(e) => println!("failed to make stream: {e}"),
                 }
             }
             ctx.request_repaint();
-            if let Some(streamer) = self.video_stream.as_mut() {
-                streamer.process_state();
-                ui.label(format!("frame rate: {}", streamer.framerate));
-                ui.label(format!("size: {}x{}", streamer.width, streamer.height));
-                ui.label(streamer.duration_text());
-                ui.label(format!("{:?}", streamer.player_state.get()));
+            if let Some(player) = self.player.as_mut() {
+                player.process_state();
+                ui.label(format!("frame rate: {}", player.framerate));
+                ui.label(format!("size: {}x{}", player.width, player.height));
+                ui.label(player.duration_text());
+                ui.label(format!("{:?}", player.player_state.get()));
 
-                ui.checkbox(&mut streamer.looping, "loop");
+                ui.checkbox(&mut player.looping, "loop");
                 ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=1.));
                 if ui.button("start playing").clicked() {
-                    streamer.start()
+                    player.start()
                 }
                 if ui.button("play").clicked() {
-                    streamer.unpause();
+                    player.unpause();
                 }
                 if ui.button("pause").clicked() {
-                    streamer.pause();
+                    player.pause();
                 }
                 if ui.button("stop").clicked() {
-                    streamer.stop();
+                    player.stop();
                 }
                 Grid::new("h").show(ui, |ui| {
-                    streamer.ui(
+                    player.ui(
                         ui,
                         [
-                            streamer.width as f32 * self.stream_size_scale,
-                            streamer.height as f32 * self.stream_size_scale,
+                            player.width as f32 * self.stream_size_scale,
+                            player.height as f32 * self.stream_size_scale,
                         ],
                     );
                 });

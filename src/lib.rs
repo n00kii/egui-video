@@ -67,7 +67,8 @@ pub struct Player {
     preseek_player_state: Option<PlayerState>,
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Cache<i64>,
-    _audio_elapsed_ms: Cache<i64>,
+    audio_elapsed_ms: Cache<i64>,
+    input_path: String,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -532,34 +533,20 @@ impl Player {
         }
     }
 
-    pub fn new_from_bytes(ctx: &egui::Context, audio_device: &mut AudioStreamerDevice, input_bytes: &[u8]) -> Result<Self> {
+    pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
-        let mut slf = Self::new(ctx, audio_device, &path)?;
+        let mut slf = Self::new(ctx, &path)?;
         slf.temp_file = Some(file);
         Ok(slf)
     }
 
-    pub fn new(ctx: &egui::Context, audio_device: &mut AudioStreamerDevice, input_path: &String) -> Result<Self> {
-        let input_context = input(&input_path)?;
-        let video_stream = input_context
-            .streams()
-            .best(Type::Video)
-            .ok_or(ffmpeg::Error::StreamNotFound)?;
-        let video_stream_index = video_stream.index();
-        let max_audio_volume = 5.;
+    pub fn with_audio(mut self, audio_device: &mut AudioStreamerDevice) -> Result<Self> {
+        let audio_input_context = input(&self.input_path)?;
+        let audio_stream = audio_input_context.streams().best(Type::Audio);
 
-        let audio_volume = Cache::new(max_audio_volume / 2.);
-        let audio_stream = input_context.streams().best(Type::Audio);
-        // let mut audio_device = AudioStreamerCallback::init(audio_sys).unwrap();
-
-        let video_elapsed_ms = Cache::new(0);
-        let audio_elapsed_ms = Cache::new(0);
-        let player_state = Cache::new(PlayerState::Stopped);
-
-        let audio_decoder = if let Some(audio_stream) = audio_stream.as_ref() {
-            let audio_input_context = input(&input_path)?;
+        let audio_streamer = if let Some(audio_stream) = audio_stream.as_ref() {
             let audio_stream_index = audio_stream.index();
             let audio_context =
                 ffmpeg::codec::context::Context::from_parameters(audio_stream.parameters())?;
@@ -576,13 +563,13 @@ impl Player {
                 audio_device.spec().freq as u32,
             )?;
 
-            audio_device.lock().audio_volume = audio_volume.clone();
+            audio_device.lock().audio_volume = self.audio_volume.clone();
             audio_device.lock().sample_consumer = Some(audio_sample_consumer);
             audio_device.resume();
             Some(AudioStreamer {
-                player_state: player_state.clone(),
-                _video_elapsed_ms: video_elapsed_ms.clone(),
-                audio_elapsed_ms: audio_elapsed_ms.clone(),
+                player_state: self.player_state.clone(),
+                _video_elapsed_ms: self.video_elapsed_ms.clone(),
+                audio_elapsed_ms: self.audio_elapsed_ms.clone(),
                 audio_sample_producer,
                 input_context: audio_input_context,
                 audio_decoder,
@@ -592,6 +579,24 @@ impl Player {
         } else {
             None
         };
+        self.audio_streamer = audio_streamer.map(|s| Arc::new(Mutex::new(s)));
+        Ok(self)
+    }
+
+    pub fn new(ctx: &egui::Context, input_path: &String) -> Result<Self> {
+        let input_context = input(&input_path)?;
+        let video_stream = input_context
+            .streams()
+            .best(Type::Video)
+            .ok_or(ffmpeg::Error::StreamNotFound)?;
+        let video_stream_index = video_stream.index();
+        let max_audio_volume = 5.;
+
+        let audio_volume = Cache::new(max_audio_volume / 2.);
+
+        let video_elapsed_ms = Cache::new(0);
+        let audio_elapsed_ms = Cache::new(0);
+        let player_state = Cache::new(PlayerState::Stopped);
 
         let video_context =
             ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?;
@@ -623,7 +628,8 @@ impl Player {
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
         let mut streamer = Self {
-            audio_streamer: audio_decoder.map(|ad| Arc::new(Mutex::new(ad))),
+            input_path: input_path.clone(),
+            audio_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
             framerate,
@@ -635,7 +641,7 @@ impl Player {
             texture_handle,
             player_state,
             video_elapsed_ms,
-            _audio_elapsed_ms: audio_elapsed_ms,
+            audio_elapsed_ms,
             width,
             last_seek_ms: None,
             duration_ms,
