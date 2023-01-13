@@ -17,9 +17,8 @@ as of now, can't publish as a crate due to me depending on a modified version of
     let audio_sys = sdl2::init()?.audio()?;
     let audio_device = AudioStreamerCallback::init(&audio_sys)?;
     
-    // don't let audio_sys or audio_device drop out of memory! (or else you lose audio)
+    // don't let audio_device drop out of memory! (or else you lose audio)
 
-    add_audio_sys_to_state_somewhere(audio_sys);
     add_audio_device_to_state_somewhere(audio_device);
 }
 ```

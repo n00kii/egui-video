@@ -133,7 +133,8 @@ pub struct Cache<T: Copy> {
 }
 
 impl<T: Copy> Cache<T> {
-    fn set(&mut self, value: T) {
+    /// Set the value. Blocks the thread until it can aquire the mutex.
+    pub fn set(&mut self, value: T) {
         self.cached_value = value;
         *self.raw_value.lock() = value
     }
@@ -147,14 +148,17 @@ impl<T: Copy> Cache<T> {
     pub fn get_true(&mut self) -> T {
         self.try_update_cache().unwrap_or(self.cached_value)
     }
-    fn update_cache(&mut self) {
+    /// Updates the cache. Blocks the thread until it can aquire the mutex.
+    pub fn update_cache(&mut self) {
         self.cached_value = *self.raw_value.lock();
     }
-    fn get_updated(&mut self) -> T {
+    /// Get the updated value. Blocks the thread until it can aquire the mutex.
+    pub fn get_updated(&mut self) -> T {
         self.update_cache();
         self.cached_value
     }
-    fn try_update_cache(&mut self) -> Option<T> {
+    /// Attempt to update the cache by trying to lock the mutex. Returns the updated value as an [`Option`] if it succeeeds.
+    pub fn try_update_cache(&mut self) -> Option<T> {
         if let Some(new_value) = self.raw_value.try_lock() {
             self.cached_value = *new_value;
             Some(self.cached_value)
@@ -162,7 +166,8 @@ impl<T: Copy> Cache<T> {
             None
         }
     }
-    fn new(value: T) -> Self {
+    /// Make a new cache.
+    pub fn new(value: T) -> Self {
         Self {
             override_value: None,
             cached_value: value,
