@@ -66,7 +66,7 @@ impl eframe::App for App {
                     )
                     .clicked()
                 {
-                    if let Some(path_buf) = rfd::FileDialog::new().pick_file() {
+                    if let Some(path_buf) = rfd::FileDialog::new().add_filter("videos", &["mp4", "gif", "webm"]).pick_file() {
                         self.media_path = path_buf.as_path().to_string_lossy().to_string();
                     }
                 }
