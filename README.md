@@ -15,7 +15,7 @@ as of now, can't publish as a crate due to me depending on a modified version of
 
 { // if using audio...
     let audio_sys = sdl2::init()?.audio()?;
-    let audio_device = AudioStreamerCallback::init(&audio_sys)?;
+    let audio_device = egui_video::init_audio_device(&audio_sys)?;
     
     // don't let audio_device drop out of memory! (or else you lose audio)
 
@@ -33,7 +33,6 @@ let mut player = Player::new(ctx, my_media_path)?;
 ```
 ```rust
 /* called every frame (showing the player) */
-player.process_state();
 player.ui(ui, [player.width as f32, player.height as f32]);
 ```
 ### current caveats

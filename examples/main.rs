@@ -1,7 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window};
-use egui_video::{AudioStreamerCallback, AudioStreamerDevice, Player};
+use egui_video::{AudioStreamerDevice, Player};
 fn main() {
     eframe::run_native(
         "app",
@@ -19,7 +19,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_device: AudioStreamerCallback::init(&sdl2::init().unwrap().audio().unwrap())
+            audio_device: egui_video::init_audio_device(&sdl2::init().unwrap().audio().unwrap())
                 .unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
@@ -73,8 +73,6 @@ impl eframe::App for App {
             });
             ui.separator();
             if let Some(player) = self.player.as_mut() {
-                player.process_state();
-
                 Window::new("info").show(ctx, |ui| {
                     Grid::new("info_grid").show(ui, |ui| {
                         ui.label("frame rate");

@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 //! egui-video
 //! video playback library for [`egui`]
-//! 
+//!
 extern crate ffmpeg_next as ffmpeg;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -15,20 +15,18 @@ use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
-use ffmpeg::software;
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Rational, Rescale};
-use sdl2::audio::{AudioCallback, AudioDevice, AudioFormat, AudioSpecDesired};
+use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
-use std::io::prelude::*;
+use ringbuf::SharedRb;
+use sdl2::audio::{AudioCallback, AudioDevice, AudioFormat, AudioSpecDesired};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use timer::{Guard, Timer};
-use ringbuf::SharedRb;
 
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
-
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
@@ -47,7 +45,7 @@ type AudioSampleProducer =
 type AudioSampleConsumer =
     ringbuf::Consumer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 
-/// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file. 
+/// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file.
 /// Initialize once, and use the [`Player::ui`] or [`Player::ui_at()`] functions to show the playback.
 pub struct Player {
     /// The video streamer of the player.
@@ -221,7 +219,7 @@ impl Player {
         self.video_elapsed_ms.get() as f32 / self.duration_ms as f32
     }
     fn spawn_timers(&mut self) {
-        let texture_handle = self.texture_handle.clone();
+        let mut texture_handle = self.texture_handle.clone();
         let texture_options = self.texture_options.clone();
         let ctx = self.ctx_ref.clone();
         let stream_decoder = Arc::clone(&self.video_streamer);
@@ -232,7 +230,7 @@ impl Player {
             stream_decoder
                 .lock()
                 .process_state(duration_ms, true, |frame| {
-                    texture_handle.clone().set(frame, texture_options)
+                    texture_handle.set(frame, texture_options)
                 });
         });
         self.frame_thread = Some(frame_timer_guard);
@@ -256,8 +254,8 @@ impl Player {
         self.reset(true);
         self.spawn_timers();
     }
-    /// Processes some internal state, needs to be called every frame.
-    pub fn process_state(&mut self) {
+
+    fn process_state(&mut self) {
         let mut reset_stream = false;
         let video_elapsed_ms = self.video_elapsed_ms.get();
         if self.last_seek_ms.is_some() {
@@ -294,6 +292,7 @@ impl Player {
 
     /// Draw the player's ui.
     pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> egui::Response {
+        self.process_state();
         let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
         let response = ui.add(image);
         self.render_ui(ui, &response);
@@ -302,6 +301,7 @@ impl Player {
 
     /// Draw the player's ui with a specific rect.
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
+        self.process_state();
         let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
         let response = ui.put(rect, image);
         self.render_ui(ui, &response);
@@ -380,7 +380,6 @@ impl Player {
                         / fullseekbar_width;
                     if ui.ctx().input().pointer.primary_down() {
                         if is_stopped {
-                            // if let Ok(mut stream_decoder) = self.stream_decoder.lock() {
                             self.reset(true);
                             self.spawn_timers();
                         }
@@ -485,7 +484,6 @@ impl Player {
             }
 
             if self.audio_streamer.is_some() {
-
                 let sound_icon_rect = ui.painter().text(
                     sound_icon_pos,
                     Align2::RIGHT_BOTTOM,
@@ -493,22 +491,29 @@ impl Player {
                     icon_font_id.clone(),
                     text_color,
                 );
-    
-                if ui.interact(sound_icon_rect, playback_response.id.with("sound_icon_sense"), Sense::click()).clicked() {
+
+                if ui
+                    .interact(
+                        sound_icon_rect,
+                        playback_response.id.with("sound_icon_sense"),
+                        Sense::click(),
+                    )
+                    .clicked()
+                {
                     if self.audio_volume.get() != 0. {
                         self.audio_volume.set(0.)
                     } else {
                         self.audio_volume.set(self.max_audio_volume / 2.)
                     }
                 }
-    
+
                 let sound_slider_outer_height = 75.;
                 let sound_slider_margin = 5.;
                 let sound_slider_opacity = 100;
                 let mut sound_slider_rect = sound_icon_rect;
                 sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
                 sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
-    
+
                 let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
                 let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
                 let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
@@ -527,20 +532,24 @@ impl Player {
                     .memory()
                     .data
                     .insert_temp(sound_anim_id, sound_anim_frac);
-    
-                let sound_slider_bg_color =
-                    Color32::from_black_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
-                let sound_bar_color =
-                    Color32::from_white_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
+
+                let sound_slider_bg_color = Color32::from_black_alpha(sound_slider_opacity)
+                    .linear_multiply(sound_anim_frac);
+                let sound_bar_color = Color32::from_white_alpha(sound_slider_opacity)
+                    .linear_multiply(sound_anim_frac);
                 let mut sound_bar_rect = sound_slider_rect;
                 sound_bar_rect.set_top(
                     sound_bar_rect.bottom()
-                        - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
+                        - (self.audio_volume.get() / self.max_audio_volume)
+                            * sound_bar_rect.height(),
                 );
-    
-                ui.painter()
-                    .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
-    
+
+                ui.painter().rect_filled(
+                    sound_slider_rect,
+                    Rounding::same(5.),
+                    sound_slider_bg_color,
+                );
+
                 ui.painter()
                     .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
                 let sound_slider_resp = ui.interact(
@@ -548,7 +557,9 @@ impl Player {
                     playback_response.id.with("sound_slider_sense"),
                     Sense::click_and_drag(),
                 );
-                if sound_anim_frac > 0. && sound_slider_resp.clicked() || sound_slider_resp.dragged() {
+                if sound_anim_frac > 0. && sound_slider_resp.clicked()
+                    || sound_slider_resp.dragged()
+                {
                     if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
                         let sound_frac = 1.
                             - ((hover_pos - sound_slider_rect.left_top()).y
@@ -559,9 +570,6 @@ impl Player {
                     }
                 }
             }
-
-
-            
 
             Some(seekbar_interact_rect)
         } else {
@@ -579,8 +587,7 @@ impl Player {
         slf.temp_file = Some(file);
         Ok(slf)
     }
-    
-    
+
     /// Initializes the audio stream (if there is one), required for making a [`Player`] output audio.
     pub fn with_audio(mut self, audio_device: &mut AudioStreamerDevice) -> Result<Self> {
         let audio_input_context = input(&self.input_path)?;
@@ -599,7 +606,7 @@ impl Player {
                 audio_decoder.channel_layout(),
                 audio_decoder.rate(),
                 audio_device.spec().format.to_sample(),
-                audio_decoder.channel_layout(),
+                ChannelLayout::STEREO,
                 audio_device.spec().freq as u32,
             )?;
 
@@ -748,9 +755,7 @@ pub trait Streamer {
         } else if let PlayerState::Seeking(seek_frac) = player_state {
             let target_ms = (seek_frac as f64 * duration_ms as f64) as i64;
             let seeking_forward = target_ms > self.elapsed_ms().get();
-
-            let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE); //target_ms.rescale((1, 1000), rescale::TIME_BASE);
-
+            let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
             if let Err(e) = self.input_context().seek(target_ts, ..target_ts) {
                 dbg!(e);
             } else {
@@ -794,7 +799,7 @@ pub trait Streamer {
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input;
     /// The streamer's state.
     fn player_state(&mut self) -> &mut Cache<PlayerState>;
-    
+
     /// Output a frame from the decoder.
     fn decode_frame(&mut self) -> Result<Self::Frame>;
     /// Ignore the remainder of this packet.
@@ -922,11 +927,10 @@ impl Streamer for AudioStreamer {
         } else {
             resampled_frame.plane(0)
         };
-
         while self.audio_sample_producer.free_len() < audio_samples.len() {
             // std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        self.audio_sample_producer.push_slice(audio_samples); // let mut rgb_frame = Video::empty();
+        self.audio_sample_producer.push_slice(audio_samples); 
         Ok(())
     }
 }
@@ -954,6 +958,11 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
+/// Create a new [`AudioStreamerDevice`]. Required for using audio.
+pub fn init_audio_device(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
+    AudioStreamerCallback::init(audio_sys)
+}
+
 /// Pipes audio samples to SDL2.
 pub struct AudioStreamerCallback {
     sample_consumer: Option<AudioSampleConsumer>,
@@ -975,8 +984,7 @@ impl AudioCallback for AudioStreamerCallback {
 }
 
 impl AudioStreamerCallback {
-    /// Create a new [`AudioStreamerDevice`]. Required for using audio.
-    pub fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
+    fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
         let audio_spec = AudioSpecDesired {
             freq: Some(44_100),
             channels: Some(2),
