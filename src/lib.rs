@@ -372,13 +372,13 @@ impl Player {
             }
 
             if seekbar_hovered || currently_seeking {
-                if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
+                if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                     let seek_frac = ((hover_pos - playback_response.rect.left_top()).x
                         - seekbar_width_offset / 2.)
                         .max(0.)
                         .min(fullseekbar_width)
                         / fullseekbar_width;
-                    if ui.ctx().input().pointer.primary_down() {
+                    if ui.ctx().input(|i| i.pointer.primary_down()) {
                         if is_stopped {
                             self.reset(true);
                             self.spawn_timers();
@@ -395,7 +395,7 @@ impl Player {
                                 .min(fullseekbar_rect.right())
                                 .max(fullseekbar_rect.left()),
                         );
-                    } else if ui.ctx().input().pointer.any_released() {
+                    } else if ui.ctx().input(|i| i.pointer.any_released()) {
                         if let Some(previous_state) = self.preseek_player_state.take() {
                             self.set_state(previous_state)
                         } else {
@@ -518,21 +518,16 @@ impl Player {
                 let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
                 let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
                 let sound_anim_id = playback_response.id.with("sound_anim");
-                let mut sound_anim_frac: f32 = *ui
+                let mut sound_anim_frac: f32 = ui
                     .ctx()
-                    .memory()
-                    .data
-                    .get_temp_mut_or_default(sound_anim_id);
+                    .memory_mut(|m| *m.data.get_temp_mut_or_default(sound_anim_id));
                 sound_anim_frac = ui.ctx().animate_bool_with_time(
                     sound_anim_id,
                     sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
                     0.2,
                 );
                 ui.ctx()
-                    .memory()
-                    .data
-                    .insert_temp(sound_anim_id, sound_anim_frac);
-
+                    .memory_mut(|m| m.data.insert_temp(sound_anim_id, sound_anim_frac));
                 let sound_slider_bg_color = Color32::from_black_alpha(sound_slider_opacity)
                     .linear_multiply(sound_anim_frac);
                 let sound_bar_color = Color32::from_white_alpha(sound_slider_opacity)
@@ -560,7 +555,7 @@ impl Player {
                 if sound_anim_frac > 0. && sound_slider_resp.clicked()
                     || sound_slider_resp.dragged()
                 {
-                    if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
+                    if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                         let sound_frac = 1.
                             - ((hover_pos - sound_slider_rect.left_top()).y
                                 / sound_slider_rect.height())
@@ -930,7 +925,7 @@ impl Streamer for AudioStreamer {
         while self.audio_sample_producer.free_len() < audio_samples.len() {
             // std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        self.audio_sample_producer.push_slice(audio_samples); 
+        self.audio_sample_producer.push_slice(audio_samples);
         Ok(())
     }
 }

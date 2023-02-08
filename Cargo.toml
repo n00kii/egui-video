@@ -14,7 +14,7 @@ authors = ["n00kii"]
 from_bytes = ["dep:tempfile"]
 
 [dependencies]
-egui = "0.20.1"
+egui = "0.21.0"
 ffmpeg-next = { git = "https://github.com/n00kii/rust-ffmpeg.git" }
 anyhow = "1.0.66"
 timer = "0.2.0"
@@ -26,5 +26,5 @@ parking_lot = "0.12.1"
 itertools = "0.10.5"
 
 [dev-dependencies]
-rfd = "0.10.0"
-eframe = "0.20.1"
+rfd = "0.11.0"
+eframe = "0.21.0"

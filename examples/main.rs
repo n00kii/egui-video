@@ -3,11 +3,11 @@ use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window};
 use egui_video::{AudioStreamerDevice, Player};
 fn main() {
-    eframe::run_native(
+    let _ = eframe::run_native(
         "app",
         NativeOptions::default(),
         Box::new(|_| Box::new(App::default())),
-    )
+    );
 }
 struct App {
     audio_device: AudioStreamerDevice,
