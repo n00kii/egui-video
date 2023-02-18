@@ -58,7 +58,8 @@ pub struct Player {
     /// The framerate of the video stream.
     pub framerate: f64,
     texture_options: TextureOptions,
-    texture_handle: TextureHandle,
+    /// The player's texture handle.
+    pub texture_handle: TextureHandle,
     /// The height of the video stream.
     pub height: u32,
     /// The width of the video stream.
