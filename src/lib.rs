@@ -20,7 +20,7 @@ use ffmpeg::{rescale, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
-use sdl2::audio::{AudioCallback, AudioDevice, AudioFormat, AudioSpecDesired};
+use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use timer::{Guard, Timer};
@@ -38,7 +38,7 @@ fn format_duration(dur: Duration) -> String {
 }
 
 /// The playback device. Needs to be initialized (and kept alive!) for use by a [`Player`].
-pub type AudioStreamerDevice = AudioDevice<AudioStreamerCallback>;
+pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
 
 type AudioSampleProducer =
     ringbuf::Producer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
@@ -585,7 +585,7 @@ impl Player {
     }
 
     /// Initializes the audio stream (if there is one), required for making a [`Player`] output audio.
-    pub fn with_audio(mut self, audio_device: &mut AudioStreamerDevice) -> Result<Self> {
+    pub fn with_audio(mut self, audio_device: &mut AudioDevice) -> Result<Self> {
         let audio_input_context = input(&self.input_path)?;
         let audio_stream = audio_input_context.streams().best(Type::Audio);
 
@@ -606,8 +606,11 @@ impl Player {
                 audio_device.spec().freq as u32,
             )?;
 
-            audio_device.lock().audio_volume = self.audio_volume.clone();
-            audio_device.lock().sample_consumer = Some(audio_sample_consumer);
+            audio_device.lock().sample_streams.push(AudioSampleStream {
+                sample_consumer: audio_sample_consumer,
+                audio_volume: self.audio_volume.clone(),
+            });
+            
             audio_device.resume();
             Some(AudioStreamer {
                 player_state: self.player_state.clone(),
@@ -954,41 +957,43 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
-/// Create a new [`AudioStreamerDevice`]. Required for using audio.
-pub fn init_audio_device(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
-    AudioStreamerCallback::init(audio_sys)
+/// Create a new [`AudioDeviceCallback`]. Required for using audio.
+pub fn init_audio_device(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
+    AudioDeviceCallback::init(audio_sys)
 }
 
 /// Pipes audio samples to SDL2.
-pub struct AudioStreamerCallback {
-    sample_consumer: Option<AudioSampleConsumer>,
+pub struct AudioDeviceCallback {
+    sample_streams: Vec<AudioSampleStream>,
+}
+
+struct AudioSampleStream {
+    sample_consumer: AudioSampleConsumer,
     audio_volume: Cache<f32>,
 }
 
-impl AudioCallback for AudioStreamerCallback {
+impl AudioCallback for AudioDeviceCallback {
     type Channel = f32;
     fn callback(&mut self, output: &mut [Self::Channel]) {
-        if let Some(sample_consumer) = self.sample_consumer.as_mut() {
-            for x in output.iter_mut() {
-                match sample_consumer.pop() {
-                    Some(sample) => *x = sample * self.audio_volume.get(),
-                    None => *x = 0.,
-                }
-            }
+        for x in output.iter_mut() {
+            *x = self
+                .sample_streams
+                .iter_mut()
+                .map(|s| s.sample_consumer.pop().unwrap_or(0.) * s.audio_volume.get())
+                .sum()
         }
     }
 }
 
-impl AudioStreamerCallback {
-    fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioStreamerDevice, String> {
+impl AudioDeviceCallback {
+    fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
         let audio_spec = AudioSpecDesired {
             freq: Some(44_100),
             channels: Some(2),
             samples: None,
         };
-        let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioStreamerCallback {
-            sample_consumer: None,
-            audio_volume: Cache::new(0.),
+        let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioDeviceCallback {
+            sample_streams: vec![],
         })?;
         Ok(device)
     }

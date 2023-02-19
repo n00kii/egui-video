@@ -1,7 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window};
-use egui_video::{AudioStreamerDevice, Player};
+use egui_video::{AudioDevice, Player};
 fn main() {
     let _ = eframe::run_native(
         "app",
@@ -10,7 +10,7 @@ fn main() {
     );
 }
 struct App {
-    audio_device: AudioStreamerDevice,
+    audio_device: AudioDevice,
     media_path: String,
     stream_size_scale: f32,
     player: Option<Player>,
