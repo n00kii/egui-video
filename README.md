@@ -3,12 +3,12 @@
 [![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-modal/0.1.0/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
-![no god please no](media/no_god.gif)
-
 plays videos in egui from file path or from bytes
 
 as of now, can't publish as a crate due to me depending on a modified version of `rust-ffmpeg`. until the [relevant 2 year old pr](https://github.com/zmwangx/rust-ffmpeg/pull/85) goes through, you have to specify this as a git dependancy in `Cargo.toml`
 
+## dependancies:
+ - requires ffmpeg 6. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
 ## usage:
 ```rust
 /* called once (top level initialization) */
