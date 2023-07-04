@@ -5,7 +5,7 @@
 
 plays videos in egui from file path or from bytes
 
-as of now, can't publish as a crate due to me depending on a modified version of `rust-ffmpeg`. until the [relevant 2 year old pr](https://github.com/zmwangx/rust-ffmpeg/pull/85) goes through, you have to specify this as a git dependancy in `Cargo.toml`
+as of now, can't publish as a crate due to me depending on a modified version of `rust-ffmpeg`; i'm waiting for response on the [corresponsing PR](https://github.com/zmwangx/rust-ffmpeg/pull/153). for now, you have to specify this as a git dependancy in `Cargo.toml`
 
 ## dependancies:
  - requires ffmpeg 6. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
@@ -35,6 +35,9 @@ let mut player = Player::new(ctx, my_media_path)?;
 /* called every frame (showing the player) */
 player.ui(ui, [player.width as f32, player.height as f32]);
 ```
+## contributions
+are welcome :)
+
 ### current caveats
  - need to compile in `release` or `opt-level=3` otherwise limited playback performance
  - ~~bad (playback, seeking) performance with large resolution streams~~
