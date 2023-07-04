@@ -1,6 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
-use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window, DragValue};
+use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Window};
 use egui_video::{AudioDevice, Player};
 fn main() {
     let _ = eframe::run_native(
@@ -69,7 +69,10 @@ impl eframe::App for App {
                     )
                     .clicked()
                 {
-                    if let Some(path_buf) = rfd::FileDialog::new().add_filter("videos", &["mp4", "gif", "webm"]).pick_file() {
+                    if let Some(path_buf) = rfd::FileDialog::new()
+                        .add_filter("videos", &["mp4", "gif", "webm"])
+                        .pick_file()
+                    {
                         self.media_path = path_buf.as_path().to_string_lossy().to_string();
                     }
                 }
@@ -104,7 +107,11 @@ impl eframe::App for App {
                         if ui.button("seek to:").clicked() {
                             player.seek(self.seek_frac);
                         }
-                        ui.add(DragValue::new(&mut self.seek_frac).speed(0.05).clamp_range(0.0..=1.0));
+                        ui.add(
+                            DragValue::new(&mut self.seek_frac)
+                                .speed(0.05)
+                                .clamp_range(0.0..=1.0),
+                        );
                         ui.checkbox(&mut player.looping, "loop");
                     });
                     ui.horizontal(|ui| {
@@ -129,10 +136,12 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.label("volume");
                         let mut volume = player.audio_volume.get();
-                        if ui.add(Slider::new(&mut volume, 0.0..=player.max_audio_volume)).changed() {
+                        if ui
+                            .add(Slider::new(&mut volume, 0.0..=player.max_audio_volume))
+                            .changed()
+                        {
                             player.audio_volume.set(volume);
                         };
-
                     });
                 });
 

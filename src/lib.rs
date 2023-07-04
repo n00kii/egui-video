@@ -242,7 +242,6 @@ impl Player {
             std::thread::spawn(move || {
                 video_streamer.lock().seek(seek_frac);
             });
-
         }
     }
     fn spawn_timers(&mut self) {
@@ -905,8 +904,8 @@ pub trait Streamer: Send {
     }
     /// Process a decoded frame.
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame>;
-    /// Apply a processed frame.
-    fn apply_frame(&mut self, frame: Self::ProcessedFrame) {}
+    /// Apply a processed frame
+    fn apply_frame(&mut self, _frame: Self::ProcessedFrame) {}
     /// Decode and process a frame.
     fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
