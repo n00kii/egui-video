@@ -1,6 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
-use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window};
+use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window, DragValue};
 use egui_video::{AudioDevice, Player};
 fn main() {
     let _ = eframe::run_native(
@@ -11,9 +11,11 @@ fn main() {
 }
 struct App {
     audio_device: AudioDevice,
+    player: Option<Player>,
+
     media_path: String,
     stream_size_scale: f32,
-    player: Option<Player>,
+    seek_frac: f32,
 }
 
 impl Default for App {
@@ -23,6 +25,7 @@ impl Default for App {
                 .unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
+            seek_frac: 0.,
             player: None,
         }
     }
@@ -97,7 +100,13 @@ impl eframe::App for App {
                     });
                 });
                 Window::new("controls").show(ctx, |ui| {
-                    ui.checkbox(&mut player.looping, "loop");
+                    ui.horizontal(|ui| {
+                        if ui.button("seek to:").clicked() {
+                            player.seek(self.seek_frac);
+                        }
+                        ui.add(DragValue::new(&mut self.seek_frac).speed(0.05).clamp_range(0.0..=1.0));
+                        ui.checkbox(&mut player.looping, "loop");
+                    });
                     ui.horizontal(|ui| {
                         ui.label("size scale");
                         ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.));
@@ -108,7 +117,7 @@ impl eframe::App for App {
                             player.start()
                         }
                         if ui.button("unpause").clicked() {
-                            player.unpause();
+                            player.resume();
                         }
                         if ui.button("pause").clicked() {
                             player.pause();

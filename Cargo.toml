@@ -15,6 +15,7 @@ from_bytes = ["dep:tempfile"]
 
 [dependencies]
 egui = "0.22.0"
+atomic = "0.5.3"
 ffmpeg-next = { git = "https://github.com/n00kii/rust-ffmpeg.git", version = "6.0.0" }
 anyhow = "1.0.66"
 timer = "0.2.0"
