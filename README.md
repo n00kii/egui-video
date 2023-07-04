@@ -3,6 +3,8 @@
 [![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-modal/0.1.0/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
+https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
+
 plays videos in egui from file path or from bytes
 
 as of now, can't publish as a crate due to me depending on a modified version of `rust-ffmpeg`; i'm waiting for response on the [corresponsing PR](https://github.com/zmwangx/rust-ffmpeg/pull/153). for now, you have to specify this as a git dependancy in `Cargo.toml`
