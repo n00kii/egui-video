@@ -1,6 +1,6 @@
 [package]
 name = "egui-video"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT"
 description = "a video library for egui"
@@ -16,12 +16,12 @@ from_bytes = ["dep:tempfile"]
 [dependencies]
 egui = "0.22.0"
 atomic = "0.5.3"
-ffmpeg-next = { git = "https://github.com/n00kii/rust-ffmpeg.git", version = "6.0.0" }
+ffmpeg-the-third = "1.2.2"
 anyhow = "1.0.66"
 timer = "0.2.0"
 chrono = "0.4.22"
 tempfile = { version = "3.3.0", optional = true }
-sdl2 = { version = "0.35.2", features = ["bundled"]}
+sdl2 = { version = "0.35.2" }
 ringbuf = "0.3.1"
 parking_lot = "0.12.1"
 itertools = "0.10.5"

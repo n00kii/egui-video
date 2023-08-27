@@ -1,4 +1,3 @@
-extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Window};
 use egui_video::{AudioDevice, Player};

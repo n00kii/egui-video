@@ -2,7 +2,7 @@
 //! egui-video
 //! video playback library for [`egui`]
 //!
-extern crate ffmpeg_next as ffmpeg;
+extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
@@ -16,6 +16,7 @@ use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
+use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
@@ -119,7 +120,7 @@ pub struct VideoStreamer {
     input_context: Input,
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
-    scaler: software::scaling::Context,
+    //scaler: software::scaling::Context,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
 }
 
@@ -735,16 +736,6 @@ impl Player {
             / video_stream.avg_frame_rate().denominator() as f64;
 
         let (width, height) = (video_decoder.width(), video_decoder.height());
-        let frame_scaler = software::scaling::Context::get(
-            video_decoder.format(),
-            video_decoder.width(),
-            video_decoder.height(),
-            Pixel::RGB24,
-            video_decoder.width(),
-            video_decoder.height(),
-            software::scaling::flag::Flags::BILINEAR,
-        )?;
-
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
@@ -756,7 +747,7 @@ impl Player {
             video_elapsed_ms: video_elapsed_ms.clone(),
             input_context,
             player_state: player_state.clone(),
-            scaler: frame_scaler,
+            //scaler: frame_scaler,
         };
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
@@ -992,7 +983,16 @@ impl Streamer for VideoStreamer {
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
         let mut rgb_frame = Video::empty();
-        self.scaler.run(&frame, &mut rgb_frame)?;
+        let mut scaler = Context::get(
+            frame.format(),
+            frame.width(),
+            frame.height(),
+            Pixel::RGB24,
+            frame.width(),
+            frame.height(),
+            Flags::BILINEAR,
+        )?;
+        scaler.run(&frame, &mut rgb_frame)?;
 
         let image = video_frame_to_image(rgb_frame);
         Ok(image)
