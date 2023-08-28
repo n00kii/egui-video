@@ -20,8 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_device: egui_video::init_audio_device_default()
-                .unwrap(),
+            audio_device: egui_video::init_audio_device_default().unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             seek_frac: 0.,
@@ -85,7 +84,7 @@ impl eframe::App for App {
                         ui.end_row();
 
                         ui.label("size");
-                        ui.label(format!("{}x{}", player.width, player.height));
+                        ui.label(format!("{}x{}", player.size.x, player.size.y));
                         ui.end_row();
 
                         ui.label("elapsed / duration");
@@ -144,13 +143,7 @@ impl eframe::App for App {
                     });
                 });
 
-                player.ui(
-                    ui,
-                    [
-                        player.width as f32 * self.stream_size_scale,
-                        player.height as f32 * self.stream_size_scale,
-                    ],
-                );
+                player.ui(ui, player.size * self.stream_size_scale);
             }
         });
     }

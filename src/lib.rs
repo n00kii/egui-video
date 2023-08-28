@@ -232,10 +232,8 @@ pub struct Player {
     texture_options: TextureOptions,
     /// The player's texture handle.
     pub texture_handle: TextureHandle,
-    /// The height of the video stream.
-    pub height: u32,
-    /// The width of the video stream.
-    pub width: u32,
+    /// The size of the video stream.
+    pub size: Vec2,
     frame_timer: Timer,
     audio_timer: Timer,
     audio_thread: Option<Guard>,
@@ -469,9 +467,12 @@ impl Player {
         self.spawn_timers();
         self.resume();
     }
-    fn process_state(&mut self) {
-        let mut reset_stream = false;
 
+    /// Process player state updates. This function must be called for proper function
+    /// of the player. This function is already included in  [`Player::ui`] or 
+    /// [`Player::ui_at`].
+    pub fn process_state(&mut self) {
+        let mut reset_stream = false;
         match self.player_state.get() {
             PlayerState::EndOfFile => {
                 if self.looping {
@@ -485,9 +486,7 @@ impl Player {
             }
             PlayerState::Seeking(seek_in_progress) => {
                 if self.last_seek_ms.is_some() {
-                    // let video_elapsed_ms = self.video_elapsed_ms.get();
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-                    // if (millisec_approx_eq(video_elapsed_ms, last_seek_ms) || video_elapsed_ms == 0)
                     if !seek_in_progress {
                         if let Some(previeous_player_state) = self.preseek_player_state {
                             self.set_state(previeous_player_state)
@@ -504,309 +503,313 @@ impl Player {
             PlayerState::Restarting => reset_stream = true,
             _ => (),
         }
-
         if reset_stream {
             self.reset();
             self.resume();
         }
     }
 
-    /// Draw the player's ui and process state changes.
-    pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> egui::Response {
-        let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
-        let response = ui.add(image);
-        self.render_ui(ui, &response);
-        self.process_state();
-        response
+
+    /// Create the [`egui::Image`] for the video frame.
+    pub fn generate_frame_image(&self, size: Vec2) -> Image {
+        Image::new(self.texture_handle.id(), size).sense(Sense::click())
     }
 
-    /// Draw the player's ui with a specific rect, and process state changes.
+    /// Draw the video frame with a specific rect (without controls). Make sure to call [`Player::procress_state`].
+    pub fn render_frame(&self, ui: &mut Ui, size: Vec2) -> Response {
+        ui.add(self.generate_frame_image(size))
+    }
+
+    /// Draw the video frame (without controls). Make sure to call [`Player::procress_state`].
+    pub fn render_frame_at(&self, ui: &mut Ui, rect: Rect) -> Response {
+        ui.put(rect, self.generate_frame_image(rect.size()))
+    }
+
+    /// Draw the video frame and player controls and process state changes.
+    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> egui::Response {
+        let frame_response = self.render_frame(ui, size);
+        self.render_controls(ui, &frame_response);
+        self.process_state();
+        frame_response
+    }
+
+    /// Draw the video frame and player controls with a specific rect, and process state changes.
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
-        let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
-        let response = ui.put(rect, image);
-        self.render_ui(ui, &response);
+        let frame_response = self.render_frame_at(ui, rect);
+        self.render_controls(ui, &frame_response);
         self.process_state();
-        response
+        frame_response
     }
 
-    fn render_ui(&mut self, ui: &mut Ui, playback_response: &Response) -> Option<Rect> {
-        let hovered = ui.rect_contains_pointer(playback_response.rect);
+    /// Draw the player controls. Make sure to call [`Player::procress_state`]. Unless you are explicitly 
+    /// drawing something in between the video frames and controls, it is probably better to use
+    /// [`Player::ui`] or [`Player::ui_at`].
+    pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
+        let hovered = ui.rect_contains_pointer(frame_response.rect);
         let currently_seeking = matches!(self.player_state.get(), PlayerState::Seeking(_));
         let is_stopped = matches!(self.player_state.get(), PlayerState::Stopped);
         let is_paused = matches!(self.player_state.get(), PlayerState::Paused);
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
-            playback_response.id.with("seekbar_anim"),
+            frame_response.id.with("seekbar_anim"),
             hovered || currently_seeking || is_paused || is_stopped,
             0.2,
         );
 
-        if seekbar_anim_frac > 0. {
-            let seekbar_width_offset = 20.;
-            let fullseekbar_width = playback_response.rect.width() - seekbar_width_offset;
+        if seekbar_anim_frac <= 0. {
+            return;
+        }
 
-            let seekbar_width = fullseekbar_width * self.duration_frac();
+        let seekbar_width_offset = 20.;
+        let fullseekbar_width = frame_response.rect.width() - seekbar_width_offset;
 
-            let seekbar_offset = 20.;
-            let seekbar_pos = playback_response.rect.left_bottom()
-                + vec2(seekbar_width_offset / 2., -seekbar_offset);
-            let seekbar_height = 3.;
-            let mut fullseekbar_rect =
-                Rect::from_min_size(seekbar_pos, vec2(fullseekbar_width, seekbar_height));
+        let seekbar_width = fullseekbar_width * self.duration_frac();
 
-            let mut seekbar_rect =
-                Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
-            let seekbar_interact_rect = fullseekbar_rect.expand(10.);
-            ui.interact(seekbar_interact_rect, playback_response.id, Sense::drag());
+        let seekbar_offset = 20.;
+        let seekbar_pos =
+            frame_response.rect.left_bottom() + vec2(seekbar_width_offset / 2., -seekbar_offset);
+        let seekbar_height = 3.;
+        let mut fullseekbar_rect =
+            Rect::from_min_size(seekbar_pos, vec2(fullseekbar_width, seekbar_height));
 
-            let seekbar_response = ui.interact(
-                seekbar_interact_rect,
-                playback_response.id.with("seekbar"),
-                Sense::click_and_drag(),
+        let mut seekbar_rect =
+            Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
+        let seekbar_interact_rect = fullseekbar_rect.expand(10.);
+        ui.interact(seekbar_interact_rect, frame_response.id, Sense::drag());
+
+        let seekbar_response = ui.interact(
+            seekbar_interact_rect,
+            frame_response.id.with("seekbar"),
+            Sense::click_and_drag(),
+        );
+
+        let seekbar_hovered = seekbar_response.hovered();
+        let seekbar_hover_anim_frac = ui.ctx().animate_bool_with_time(
+            frame_response.id.with("seekbar_hover_anim"),
+            seekbar_hovered || currently_seeking,
+            0.2,
+        );
+
+        if seekbar_hover_anim_frac > 0. {
+            let new_top = fullseekbar_rect.top() - (3. * seekbar_hover_anim_frac);
+            fullseekbar_rect.set_top(new_top);
+            seekbar_rect.set_top(new_top);
+        }
+
+        let seek_indicator_anim = ui.ctx().animate_bool_with_time(
+            frame_response.id.with("seek_indicator_anim"),
+            currently_seeking,
+            0.1,
+        );
+
+        if currently_seeking {
+            let mut seek_indicator_shadow = Shadow::big_dark();
+            seek_indicator_shadow.color = seek_indicator_shadow
+                .color
+                .linear_multiply(seek_indicator_anim);
+            let spinner_size = 20. * seek_indicator_anim;
+            ui.painter()
+                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::none()));
+            ui.put(
+                Rect::from_center_size(frame_response.rect.center(), Vec2::splat(spinner_size)),
+                Spinner::new().size(spinner_size),
             );
+        }
 
-            let seekbar_hovered = seekbar_response.hovered();
-            let seekbar_hover_anim_frac = ui.ctx().animate_bool_with_time(
-                playback_response.id.with("seekbar_hover_anim"),
-                seekbar_hovered || currently_seeking,
-                0.2,
-            );
-
-            if seekbar_hover_anim_frac > 0. {
-                let new_top = fullseekbar_rect.top() - (3. * seekbar_hover_anim_frac);
-                fullseekbar_rect.set_top(new_top);
-                seekbar_rect.set_top(new_top);
-            }
-
-            let seek_indicator_anim = ui.ctx().animate_bool_with_time(
-                playback_response.id.with("seek_indicator_anim"),
-                currently_seeking,
-                0.1,
-            );
-
-            if currently_seeking {
-                let mut seek_indicator_shadow = Shadow::big_dark();
-                seek_indicator_shadow.color = seek_indicator_shadow
-                    .color
-                    .linear_multiply(seek_indicator_anim);
-                let spinner_size = 20. * seek_indicator_anim;
-                ui.painter().add(
-                    seek_indicator_shadow.tessellate(playback_response.rect, Rounding::none()),
-                );
-                ui.put(
-                    Rect::from_center_size(
-                        playback_response.rect.center(),
-                        Vec2::splat(spinner_size),
-                    ),
-                    Spinner::new().size(spinner_size),
-                );
-            }
-
-            if seekbar_hovered || currently_seeking {
-                if let Some(hover_pos) = seekbar_response.hover_pos() {
-                    if seekbar_response.clicked() || seekbar_response.dragged() {
-                        let seek_frac = ((hover_pos - playback_response.rect.left_top()).x
-                            - seekbar_width_offset / 2.)
-                            .max(0.)
-                            .min(fullseekbar_width)
-                            / fullseekbar_width;
-                        seekbar_rect.set_right(
-                            hover_pos
-                                .x
-                                .min(fullseekbar_rect.right())
-                                .max(fullseekbar_rect.left()),
-                        );
-                        if is_stopped {
-                            self.start()
-                        }
-                        self.seek(seek_frac);
+        if seekbar_hovered || currently_seeking {
+            if let Some(hover_pos) = seekbar_response.hover_pos() {
+                if seekbar_response.clicked() || seekbar_response.dragged() {
+                    let seek_frac = ((hover_pos - frame_response.rect.left_top()).x
+                        - seekbar_width_offset / 2.)
+                        .max(0.)
+                        .min(fullseekbar_width)
+                        / fullseekbar_width;
+                    seekbar_rect.set_right(
+                        hover_pos
+                            .x
+                            .min(fullseekbar_rect.right())
+                            .max(fullseekbar_rect.left()),
+                    );
+                    if is_stopped {
+                        self.start()
                     }
+                    self.seek(seek_frac);
                 }
             }
-            let text_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
+        }
+        let text_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
-            let pause_icon = if is_paused {
-                "▶"
-            } else if is_stopped {
-                "◼"
-            } else if currently_seeking {
-                "↔"
-            } else {
-                "⏸"
-            };
-            let audio_volume_frac = self.audio_volume.get() / self.max_audio_volume;
-            let sound_icon = if audio_volume_frac > 0.7 {
-                "🔊"
-            } else if audio_volume_frac > 0.4 {
-                "🔉"
-            } else if audio_volume_frac > 0. {
-                "🔈"
-            } else {
-                "🔇"
-            };
-            let mut icon_font_id = FontId::default();
-            icon_font_id.size = 16.;
+        let pause_icon = if is_paused {
+            "▶"
+        } else if is_stopped {
+            "◼"
+        } else if currently_seeking {
+            "↔"
+        } else {
+            "⏸"
+        };
+        let audio_volume_frac = self.audio_volume.get() / self.max_audio_volume;
+        let sound_icon = if audio_volume_frac > 0.7 {
+            "🔊"
+        } else if audio_volume_frac > 0.4 {
+            "🔉"
+        } else if audio_volume_frac > 0. {
+            "🔈"
+        } else {
+            "🔇"
+        };
+        let mut icon_font_id = FontId::default();
+        icon_font_id.size = 16.;
 
-            let text_y_offset = -7.;
-            let sound_icon_offset = vec2(-5., text_y_offset);
-            let sound_icon_pos = fullseekbar_rect.right_top() + sound_icon_offset;
+        let text_y_offset = -7.;
+        let sound_icon_offset = vec2(-5., text_y_offset);
+        let sound_icon_pos = fullseekbar_rect.right_top() + sound_icon_offset;
 
-            let pause_icon_offset = vec2(3., text_y_offset);
-            let pause_icon_pos = fullseekbar_rect.left_top() + pause_icon_offset;
+        let pause_icon_offset = vec2(3., text_y_offset);
+        let pause_icon_pos = fullseekbar_rect.left_top() + pause_icon_offset;
 
-            let duration_text_offset = vec2(25., text_y_offset);
-            let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
-            let mut duration_text_font_id = FontId::default();
-            duration_text_font_id.size = 14.;
+        let duration_text_offset = vec2(25., text_y_offset);
+        let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
+        let mut duration_text_font_id = FontId::default();
+        duration_text_font_id.size = 14.;
 
-            let mut shadow = Shadow::big_light();
-            shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
+        let mut shadow = Shadow::big_light();
+        shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
 
-            let mut shadow_rect = playback_response.rect;
-            shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
-            let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::none());
+        let mut shadow_rect = frame_response.rect;
+        shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
+        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::none());
 
-            let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
-            let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
+        let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
+        let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
-            ui.painter().add(shadow_mesh);
+        ui.painter().add(shadow_mesh);
 
-            ui.painter().rect_filled(
-                fullseekbar_rect,
-                Rounding::none(),
-                fullseekbar_color.linear_multiply(0.5),
+        ui.painter().rect_filled(
+            fullseekbar_rect,
+            Rounding::none(),
+            fullseekbar_color.linear_multiply(0.5),
+        );
+        ui.painter()
+            .rect_filled(seekbar_rect, Rounding::none(), seekbar_color);
+        ui.painter().text(
+            pause_icon_pos,
+            Align2::LEFT_BOTTOM,
+            pause_icon,
+            icon_font_id.clone(),
+            text_color,
+        );
+
+        ui.painter().text(
+            duration_text_pos,
+            Align2::LEFT_BOTTOM,
+            self.duration_text(),
+            duration_text_font_id,
+            text_color,
+        );
+
+        if seekbar_hover_anim_frac > 0. {
+            ui.painter().circle_filled(
+                seekbar_rect.right_center(),
+                7. * seekbar_hover_anim_frac,
+                seekbar_color,
             );
-            ui.painter()
-                .rect_filled(seekbar_rect, Rounding::none(), seekbar_color);
-            ui.painter().text(
-                pause_icon_pos,
-                Align2::LEFT_BOTTOM,
-                pause_icon,
+        }
+
+        if frame_response.clicked() {
+            let mut reset_stream = false;
+            let mut start_stream = false;
+
+            match self.player_state.get() {
+                PlayerState::Stopped => start_stream = true,
+                PlayerState::EndOfFile => reset_stream = true,
+                PlayerState::Paused => self.player_state.set(PlayerState::Playing),
+                PlayerState::Playing => self.player_state.set(PlayerState::Paused),
+                _ => (),
+            }
+
+            if reset_stream {
+                self.reset();
+                self.resume();
+            } else if start_stream {
+                self.start();
+            }
+        }
+
+        if self.audio_streamer.is_some() {
+            let sound_icon_rect = ui.painter().text(
+                sound_icon_pos,
+                Align2::RIGHT_BOTTOM,
+                sound_icon,
                 icon_font_id.clone(),
                 text_color,
             );
 
-            ui.painter().text(
-                duration_text_pos,
-                Align2::LEFT_BOTTOM,
-                self.duration_text(),
-                duration_text_font_id,
-                text_color,
+            if ui
+                .interact(
+                    sound_icon_rect,
+                    frame_response.id.with("sound_icon_sense"),
+                    Sense::click(),
+                )
+                .clicked()
+            {
+                if self.audio_volume.get() != 0. {
+                    self.audio_volume.set(0.)
+                } else {
+                    self.audio_volume.set(self.max_audio_volume / 2.)
+                }
+            }
+
+            let sound_slider_outer_height = 75.;
+            let sound_slider_margin = 5.;
+            let sound_slider_opacity = 100;
+            let mut sound_slider_rect = sound_icon_rect;
+            sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
+            sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
+
+            let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
+            let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
+            let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
+            let sound_anim_id = frame_response.id.with("sound_anim");
+            let mut sound_anim_frac: f32 = ui
+                .ctx()
+                .memory_mut(|m| *m.data.get_temp_mut_or_default(sound_anim_id));
+            sound_anim_frac = ui.ctx().animate_bool_with_time(
+                sound_anim_id,
+                sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
+                0.2,
+            );
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(sound_anim_id, sound_anim_frac));
+            let sound_slider_bg_color =
+                Color32::from_black_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
+            let sound_bar_color =
+                Color32::from_white_alpha(sound_slider_opacity).linear_multiply(sound_anim_frac);
+            let mut sound_bar_rect = sound_slider_rect;
+            sound_bar_rect.set_top(
+                sound_bar_rect.bottom()
+                    - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
             );
 
-            if seekbar_hover_anim_frac > 0. {
-                ui.painter().circle_filled(
-                    seekbar_rect.right_center(),
-                    7. * seekbar_hover_anim_frac,
-                    seekbar_color,
-                );
-            }
+            ui.painter()
+                .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
 
-            if playback_response.clicked() {
-                let mut reset_stream = false;
-                let mut start_stream = false;
-
-                match self.player_state.get() {
-                    PlayerState::Stopped => start_stream = true,
-                    PlayerState::EndOfFile => reset_stream = true,
-                    PlayerState::Paused => self.player_state.set(PlayerState::Playing),
-                    PlayerState::Playing => self.player_state.set(PlayerState::Paused),
-                    _ => (),
-                }
-
-                if reset_stream {
-                    self.reset();
-                    self.resume();
-                } else if start_stream {
-                    self.start();
+            ui.painter()
+                .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
+            let sound_slider_resp = ui.interact(
+                sound_slider_rect,
+                frame_response.id.with("sound_slider_sense"),
+                Sense::click_and_drag(),
+            );
+            if sound_anim_frac > 0. && sound_slider_resp.clicked() || sound_slider_resp.dragged() {
+                if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                    let sound_frac = 1.
+                        - ((hover_pos - sound_slider_rect.left_top()).y
+                            / sound_slider_rect.height())
+                        .max(0.)
+                        .min(1.);
+                    self.audio_volume.set(sound_frac * self.max_audio_volume);
                 }
             }
-
-            if self.audio_streamer.is_some() {
-                let sound_icon_rect = ui.painter().text(
-                    sound_icon_pos,
-                    Align2::RIGHT_BOTTOM,
-                    sound_icon,
-                    icon_font_id.clone(),
-                    text_color,
-                );
-
-                if ui
-                    .interact(
-                        sound_icon_rect,
-                        playback_response.id.with("sound_icon_sense"),
-                        Sense::click(),
-                    )
-                    .clicked()
-                {
-                    if self.audio_volume.get() != 0. {
-                        self.audio_volume.set(0.)
-                    } else {
-                        self.audio_volume.set(self.max_audio_volume / 2.)
-                    }
-                }
-
-                let sound_slider_outer_height = 75.;
-                let sound_slider_margin = 5.;
-                let sound_slider_opacity = 100;
-                let mut sound_slider_rect = sound_icon_rect;
-                sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
-                sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
-
-                let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
-                let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
-                let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
-                let sound_anim_id = playback_response.id.with("sound_anim");
-                let mut sound_anim_frac: f32 = ui
-                    .ctx()
-                    .memory_mut(|m| *m.data.get_temp_mut_or_default(sound_anim_id));
-                sound_anim_frac = ui.ctx().animate_bool_with_time(
-                    sound_anim_id,
-                    sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
-                    0.2,
-                );
-                ui.ctx()
-                    .memory_mut(|m| m.data.insert_temp(sound_anim_id, sound_anim_frac));
-                let sound_slider_bg_color = Color32::from_black_alpha(sound_slider_opacity)
-                    .linear_multiply(sound_anim_frac);
-                let sound_bar_color = Color32::from_white_alpha(sound_slider_opacity)
-                    .linear_multiply(sound_anim_frac);
-                let mut sound_bar_rect = sound_slider_rect;
-                sound_bar_rect.set_top(
-                    sound_bar_rect.bottom()
-                        - (self.audio_volume.get() / self.max_audio_volume)
-                            * sound_bar_rect.height(),
-                );
-
-                ui.painter().rect_filled(
-                    sound_slider_rect,
-                    Rounding::same(5.),
-                    sound_slider_bg_color,
-                );
-
-                ui.painter()
-                    .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
-                let sound_slider_resp = ui.interact(
-                    sound_slider_rect,
-                    playback_response.id.with("sound_slider_sense"),
-                    Sense::click_and_drag(),
-                );
-                if sound_anim_frac > 0. && sound_slider_resp.clicked()
-                    || sound_slider_resp.dragged()
-                {
-                    if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-                        let sound_frac = 1.
-                            - ((hover_pos - sound_slider_rect.left_top()).y
-                                / sound_slider_rect.height())
-                            .max(0.)
-                            .min(1.);
-                        self.audio_volume.set(sound_frac * self.max_audio_volume);
-                    }
-                }
-            }
-
-            Some(seekbar_interact_rect)
-        } else {
-            None
         }
     }
 
@@ -900,6 +903,7 @@ impl Player {
             / video_stream.avg_frame_rate().denominator() as f64;
 
         let (width, height) = (video_decoder.width(), video_decoder.height());
+        let size = Vec2::new(width as f32, height as f32);
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
@@ -930,14 +934,13 @@ impl Player {
             player_state,
             video_elapsed_ms,
             audio_elapsed_ms,
-            width,
+            size,
             last_seek_ms: None,
             duration_ms,
             audio_volume,
             max_audio_volume,
             video_elapsed_ms_override: None,
             looping: true,
-            height,
             ctx_ref: ctx.clone(),
             #[cfg(feature = "from_bytes")]
             temp_file: None,
