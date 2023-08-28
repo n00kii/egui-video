@@ -2,7 +2,171 @@
 //! egui-video
 //! video playback library for [`egui`]
 //!
-extern crate ffmpeg_next as ffmpeg;
+//! # Example
+//!
+//! This example can also be found in the `examples` directory.
+//!
+//! ```rust
+//! use eframe::NativeOptions;
+//! use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Window};
+//! use egui_video::{AudioDevice, Player};
+//! fn main() {
+//!     let _ = eframe::run_native(
+//!         "app",
+//!         NativeOptions::default(),
+//!         Box::new(|_| Box::new(App::default())),
+//!     );
+//! }
+//! struct App {
+//!     audio_device: AudioDevice,
+//!     player: Option<Player>,
+//!
+//!     media_path: String,
+//!     stream_size_scale: f32,
+//!     seek_frac: f32,
+//! }
+//!
+//! impl Default for App {
+//!     fn default() -> Self {
+//!         Self {
+//!             audio_device: egui_video::init_audio_device(&sdl2::init().unwrap().audio().unwrap())
+//!                 .unwrap(),
+//!             media_path: String::new(),
+//!             stream_size_scale: 1.,
+//!             seek_frac: 0.,
+//!             player: None,
+//!         }
+//!     }
+//! }
+//!
+//! impl eframe::App for App {
+//!     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+//!         ctx.request_repaint();
+//!         CentralPanel::default().show(ctx, |ui| {
+//!             ui.horizontal(|ui| {
+//!                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
+//!                     if ui.button("load").clicked() {
+//!                         match Player::new(ctx, &self.media_path.replace("\"", ""))
+//!                             .and_then(|p| p.with_audio(&mut self.audio_device))
+//!                         {
+//!                             Ok(player) => {
+//!                                 self.player = Some(player);
+//!                             }
+//!                             Err(e) => println!("failed to make stream: {e}"),
+//!                         }
+//!                     }
+//!                 });
+//!                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
+//!                     if ui.button("clear").clicked() {
+//!                         self.player = None;
+//!                     }
+//!                 });
+//!
+//!                 let tedit_resp = ui.add_sized(
+//!                     [ui.available_width(), ui.available_height()],
+//!                     TextEdit::singleline(&mut self.media_path)
+//!                         .hint_text("click to set path")
+//!                         .interactive(false),
+//!                 );
+//!
+//!                 if ui
+//!                     .interact(
+//!                         tedit_resp.rect,
+//!                         tedit_resp.id.with("click_sense"),
+//!                         Sense::click(),
+//!                     )
+//!                     .clicked()
+//!                 {
+//!                     if let Some(path_buf) = rfd::FileDialog::new()
+//!                         .add_filter("videos", &["mp4", "gif", "webm"])
+//!                         .pick_file()
+//!                     {
+//!                         self.media_path = path_buf.as_path().to_string_lossy().to_string();
+//!                     }
+//!                 }
+//!             });
+//!             ui.separator();
+//!             if let Some(player) = self.player.as_mut() {
+//!                 Window::new("info").show(ctx, |ui| {
+//!                     Grid::new("info_grid").show(ui, |ui| {
+//!                         ui.label("frame rate");
+//!                         ui.label(player.framerate.to_string());
+//!                         ui.end_row();
+//!
+//!                         ui.label("size");
+//!                         ui.label(format!("{}x{}", player.width, player.height));
+//!                         ui.end_row();
+//!
+//!                         ui.label("elapsed / duration");
+//!                         ui.label(player.duration_text());
+//!                         ui.end_row();
+//!
+//!                         ui.label("state");
+//!                         ui.label(format!("{:?}", player.player_state.get()));
+//!                         ui.end_row();
+//!
+//!                         ui.label("has audio?");
+//!                         ui.label(player.audio_streamer.is_some().to_string());
+//!                         ui.end_row();
+//!                     });
+//!                 });
+//!                 Window::new("controls").show(ctx, |ui| {
+//!                     ui.horizontal(|ui| {
+//!                         if ui.button("seek to:").clicked() {
+//!                             player.seek(self.seek_frac);
+//!                         }
+//!                         ui.add(
+//!                             DragValue::new(&mut self.seek_frac)
+//!                                 .speed(0.05)
+//!                                 .clamp_range(0.0..=1.0),
+//!                         );
+//!                         ui.checkbox(&mut player.looping, "loop");
+//!                     });
+//!                     ui.horizontal(|ui| {
+//!                         ui.label("size scale");
+//!                         ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.));
+//!                     });
+//!                     ui.separator();
+//!                     ui.horizontal(|ui| {
+//!                         if ui.button("play").clicked() {
+//!                             player.start()
+//!                         }
+//!                         if ui.button("unpause").clicked() {
+//!                             player.resume();
+//!                         }
+//!                         if ui.button("pause").clicked() {
+//!                             player.pause();
+//!                         }
+//!                         if ui.button("stop").clicked() {
+//!                             player.stop();
+//!                         }
+//!                     });
+//!                     ui.horizontal(|ui| {
+//!                         ui.label("volume");
+//!                         let mut volume = player.audio_volume.get();
+//!                         if ui
+//!                             .add(Slider::new(&mut volume, 0.0..=player.max_audio_volume))
+//!                             .changed()
+//!                         {
+//!                             player.audio_volume.set(volume);
+//!                         };
+//!                     });
+//!                 });
+//!
+//!                 player.ui(
+//!                     ui,
+//!                     [
+//!                         player.width as f32 * self.stream_size_scale,
+//!                         player.height as f32 * self.stream_size_scale,
+//!                     ],
+//!                 );
+//!             }
+//!         });
+//!     }
+//! }
+//! ```
+
+extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
@@ -16,6 +180,7 @@ use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
+use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
@@ -119,7 +284,7 @@ pub struct VideoStreamer {
     input_context: Input,
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
-    scaler: software::scaling::Context,
+    //scaler: software::scaling::Context,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
 }
 
@@ -216,7 +381,7 @@ impl Player {
         self.set_state(PlayerState::Stopped)
     }
     /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
-    /// aren't able to call the player's [`ui`]/[`ui_at`] functions later on.
+    /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
     pub fn stop_direct(&mut self) {
         self.frame_thread = None;
         self.audio_thread = None;
@@ -735,16 +900,6 @@ impl Player {
             / video_stream.avg_frame_rate().denominator() as f64;
 
         let (width, height) = (video_decoder.width(), video_decoder.height());
-        let frame_scaler = software::scaling::Context::get(
-            video_decoder.format(),
-            video_decoder.width(),
-            video_decoder.height(),
-            Pixel::RGB24,
-            video_decoder.width(),
-            video_decoder.height(),
-            software::scaling::flag::Flags::BILINEAR,
-        )?;
-
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
@@ -756,7 +911,7 @@ impl Player {
             video_elapsed_ms: video_elapsed_ms.clone(),
             input_context,
             player_state: player_state.clone(),
-            scaler: frame_scaler,
+            //scaler: frame_scaler,
         };
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
@@ -992,7 +1147,16 @@ impl Streamer for VideoStreamer {
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
         let mut rgb_frame = Video::empty();
-        self.scaler.run(&frame, &mut rgb_frame)?;
+        let mut scaler = Context::get(
+            frame.format(),
+            frame.width(),
+            frame.height(),
+            Pixel::RGB24,
+            frame.width(),
+            frame.height(),
+            Flags::BILINEAR,
+        )?;
+        scaler.run(&frame, &mut rgb_frame)?;
 
         let image = video_frame_to_image(rgb_frame);
         Ok(image)
