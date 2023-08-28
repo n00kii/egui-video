@@ -15,8 +15,7 @@ plays videos in egui from file path or from bytes
 /* called once (top level initialization) */
 
 { // if using audio...
-    let audio_sys = sdl2::init()?.audio()?;
-    let audio_device = egui_video::init_audio_device(&audio_sys)?;
+    let audio_device = egui_video::init_audio_device_default()?;
     
     // don't let audio_device drop out of memory! (or else you lose audio)
 
