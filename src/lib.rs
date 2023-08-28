@@ -29,7 +29,7 @@
 //! impl Default for App {
 //!     fn default() -> Self {
 //!         Self {
-//!             audio_device: egui_video::init_audio_device(&sdl2::init().unwrap().audio().unwrap())
+//!             audio_device: egui_video::init_audio_device_default())
 //!                 .unwrap(),
 //!             media_path: String::new(),
 //!             stream_size_scale: 1.,
@@ -302,7 +302,7 @@ pub struct AudioStreamer {
 }
 
 #[derive(Clone)]
-/// Just `Arc<Mutex<T>>` with a local cache.
+/// Simple concurrecy of primitive values.
 pub struct Shared<T: Copy> {
     raw_value: Arc<Atomic<T>>,
 }
@@ -1231,9 +1231,14 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
-/// Create a new [`AudioDeviceCallback`]. Required for using audio.
+/// Create a new [`AudioDeviceCallback`] from an existing [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
 pub fn init_audio_device(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
     AudioDeviceCallback::init(audio_sys)
+}
+
+/// Create a new [`AudioDeviceCallback`]. Creates an [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
+pub fn init_audio_device_default() -> Result<AudioDevice, String> {
+    AudioDeviceCallback::init(&sdl2::init()?.audio()?)
 }
 
 /// Pipes audio samples to SDL2.
