@@ -11,7 +11,11 @@ authors = ["n00kii"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
+default = ["sdl2/bundled"]
 from_bytes = ["dep:tempfile"]
+# will compile sdl2 for you if you do not have it
+# this may require other dependancies (see https://github.com/Rust-SDL2/rust-sdl2#bundled-feature)
+sdl2-bundled = ["sdl2/bundled"]
 
 [dependencies]
 egui = "0.22.0"
