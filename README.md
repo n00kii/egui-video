@@ -1,6 +1,6 @@
 # egui-video, a video playing library for [`egui`](https://github.com/emilk/egui)
-[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video/0.5.1)
-[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-modal/0.5.1/egui_video/)
+[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video/0.5.2)
+[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/0.5.2/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
 https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
