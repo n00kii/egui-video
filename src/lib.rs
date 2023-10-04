@@ -171,9 +171,11 @@ use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
 use egui::epaint::Shadow;
+use egui::load::SizedTexture;
+use egui::text::LayoutJob;
 use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding, Sense, Spinner,
-    TextureHandle, TextureOptions, Ui, Vec2,
+    vec2, Align2, Color32, ColorImage, FontId, Image, Layout, Rect, Response, Rounding, Sense,
+    Spinner, TextureHandle, TextureOptions, Ui, Vec2,
 };
 use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::input::Input;
@@ -182,11 +184,13 @@ use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
-use ffmpeg::{rescale, Rational, Rescale};
+use ffmpeg::{rescale, Packet, Rational, Rescale, Subtitle};
 use ffmpeg::{software, ChannelLayout};
+use itertools::Itertools;
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
+use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
 use timer::{Guard, Timer};
@@ -210,7 +214,7 @@ fn format_duration(dur: Duration) -> String {
 pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
-
+type SubtitleQueue = Arc<Mutex<VecDeque<(LayoutJob, i64)>>>;
 type RingbufProducer<T> = ringbuf::Producer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 
@@ -225,6 +229,9 @@ pub struct Player {
     /// The audio streamer of the player. Won't exist unless [`Player::with_audio`] is called and there exists
     /// a valid audio stream in the file.
     pub audio_streamer: Option<Arc<Mutex<AudioStreamer>>>,
+    /// The subtitle streamer of the player. Won't exist unless [`Player::with_subtitles`] is called and there exists
+    /// a valid subtitle stream in the file.
+    pub subtitle_streamer: Option<Arc<Mutex<SubtitleStreamer>>>,
     /// The state of the player.
     pub player_state: Shared<PlayerState>,
     /// The framerate of the video stream.
@@ -234,10 +241,12 @@ pub struct Player {
     pub texture_handle: TextureHandle,
     /// The size of the video stream.
     pub size: Vec2,
-    frame_timer: Timer,
+    video_timer: Timer,
     audio_timer: Timer,
+    subtitle_timer: Timer,
     audio_thread: Option<Guard>,
-    frame_thread: Option<Guard>,
+    video_thread: Option<Guard>,
+    subtitle_thread: Option<Guard>,
     ctx_ref: egui::Context,
     /// Should the stream loop if it finishes?
     pub looping: bool,
@@ -252,7 +261,10 @@ pub struct Player {
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Shared<i64>,
     audio_elapsed_ms: Shared<i64>,
+    subtitle_elapsed_ms: Shared<i64>,
     video_elapsed_ms_override: Option<i64>,
+    subtitles_queue: SubtitleQueue, // text, end_display_time_ms
+    current_subtitle: Option<(LayoutJob, i64)>,
     input_path: String,
 }
 
@@ -288,13 +300,30 @@ pub struct VideoStreamer {
 
 /// Streams audio.
 pub struct AudioStreamer {
-    _video_elapsed_ms: Shared<i64>,
+    video_elapsed_ms: Shared<i64>,
     audio_elapsed_ms: Shared<i64>,
     audio_stream_index: usize,
     duration_ms: i64,
     audio_decoder: ffmpeg::decoder::Audio,
     resampler: software::resampling::Context,
     audio_sample_producer: AudioSampleProducer,
+    input_context: Input,
+    player_state: Shared<PlayerState>,
+}
+
+/// Streams subtitles.
+pub struct SubtitleStreamer {
+    video_elapsed_ms: Shared<i64>,
+    _audio_elapsed_ms: Shared<i64>,
+    subtitle_elapsed_ms: Shared<i64>,
+    subtitle_stream_index: usize,
+    duration_ms: i64,
+    subtitle_decoder: ffmpeg::decoder::Subtitle,
+    next_packet: Option<Packet>,
+    subtitles_queue: SubtitleQueue,
+    // resampler: software::resampling::Context,
+    // audio_sample_producer: AudioSampleProducer,
+    currently_dropping_frames: bool,
     input_context: Input,
     player_state: Shared<PlayerState>,
 }
@@ -381,7 +410,7 @@ impl Player {
     /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
     /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
     pub fn stop_direct(&mut self) {
-        self.frame_thread = None;
+        self.video_thread = None;
         self.audio_thread = None;
         self.reset()
     }
@@ -408,6 +437,9 @@ impl Player {
             if let Some(audio_streamer) = self.audio_streamer.as_mut() {
                 audio_streamer.lock().seek(seek_frac);
             };
+            if let Some(subtitle_streamer) = self.subtitle_streamer.as_mut() {
+                subtitle_streamer.lock().seek(seek_frac);
+            };
 
             self.last_seek_ms = Some((seek_frac as f64 * self.duration_ms as f64) as i64);
             self.set_state(PlayerState::Seeking(true));
@@ -426,7 +458,9 @@ impl Player {
         fn play<T: Streamer>(streamer: &Weak<Mutex<T>>) {
             if let Some(streamer) = streamer.upgrade() {
                 if let Some(mut streamer) = streamer.try_lock() {
-                    if streamer.player_state().get() == PlayerState::Playing {
+                    if (streamer.player_state().get() == PlayerState::Playing)
+                        && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
+                    {
                         match streamer.recieve_next_packet_until_frame() {
                             Ok(frame) => streamer.apply_frame(frame),
                             Err(e) => {
@@ -446,12 +480,12 @@ impl Player {
 
         let video_streamer_ref = Arc::downgrade(&self.video_streamer);
 
-        let frame_timer_guard = self.frame_timer.schedule_repeating(wait_duration, move || {
+        let video_timer_guard = self.video_timer.schedule_repeating(wait_duration, move || {
             play(&video_streamer_ref);
             ctx.request_repaint();
         });
 
-        self.frame_thread = Some(frame_timer_guard);
+        self.video_thread = Some(video_timer_guard);
 
         if let Some(audio_decoder) = self.audio_streamer.as_ref() {
             let audio_decoder_ref = Arc::downgrade(&audio_decoder);
@@ -459,6 +493,14 @@ impl Player {
                 .audio_timer
                 .schedule_repeating(Duration::zero(), move || play(&audio_decoder_ref));
             self.audio_thread = Some(audio_timer_guard);
+        }
+
+        if let Some(subtitle_decoder) = self.subtitle_streamer.as_ref() {
+            let subtitle_decoder_ref = Arc::downgrade(&subtitle_decoder);
+            let subtitle_timer_guard = self
+                .subtitle_timer
+                .schedule_repeating(wait_duration, move || play(&subtitle_decoder_ref));
+            self.subtitle_thread = Some(subtitle_timer_guard);
         }
     }
     /// Start the stream.
@@ -469,7 +511,7 @@ impl Player {
     }
 
     /// Process player state updates. This function must be called for proper function
-    /// of the player. This function is already included in  [`Player::ui`] or 
+    /// of the player. This function is already included in  [`Player::ui`] or
     /// [`Player::ui_at`].
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
@@ -484,7 +526,22 @@ impl Player {
             PlayerState::Stopped => {
                 self.stop_direct();
             }
+            PlayerState::Playing => {
+                if let Some((_, remaining_duration)) = self.current_subtitle.as_mut() {
+                    *remaining_duration -= self.ctx_ref.input(|i| (i.stable_dt * 1000.) as i64);
+                }
+                if self.current_subtitle.as_ref().is_some_and(|(_, d)| *d <= 0) {
+                    self.current_subtitle = None;
+                }
+                if let Some(mut queue) = self.subtitles_queue.try_lock() {
+                    if queue.len() > 1 {
+                        self.current_subtitle = Some(queue.pop_front().unwrap());
+                    }
+                }
+            }
             PlayerState::Seeking(seek_in_progress) => {
+                self.current_subtitle = None;
+                self.subtitles_queue.lock().clear();
                 if self.last_seek_ms.is_some() {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
                     if !seek_in_progress {
@@ -509,10 +566,9 @@ impl Player {
         }
     }
 
-
     /// Create the [`egui::Image`] for the video frame.
     pub fn generate_frame_image(&self, size: Vec2) -> Image {
-        Image::new(self.texture_handle.id(), size).sense(Sense::click())
+        Image::new(SizedTexture::new(self.texture_handle.id(), size)).sense(Sense::click())
     }
 
     /// Draw the video frame with a specific rect (without controls). Make sure to call [`Player::procress_state`].
@@ -529,6 +585,7 @@ impl Player {
     pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> egui::Response {
         let frame_response = self.render_frame(ui, size);
         self.render_controls(ui, &frame_response);
+        self.render_subtitles(ui, &frame_response);
         self.process_state();
         frame_response
     }
@@ -537,11 +594,22 @@ impl Player {
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
         let frame_response = self.render_frame_at(ui, rect);
         self.render_controls(ui, &frame_response);
+        self.render_subtitles(ui, &frame_response);
         self.process_state();
         frame_response
     }
 
-    /// Draw the player controls. Make sure to call [`Player::procress_state`]. Unless you are explicitly 
+    /// Draw the subtitles, if any. Only works when a subtitle streamer has been already created with
+    /// [`Player::add_subtitles`] or [`Player::with_subtitles`] and a valid subtitle stream exists.
+    pub fn render_subtitles(&mut self, ui: &mut Ui, frame_response: &Response) {
+        if let Some((subtitle, _)) = self.current_subtitle.as_ref() {
+            let subtitle_galley = ui.ctx().fonts(|f| f.layout_job(subtitle.clone()));
+            ui.painter()
+                .galley(frame_response.rect.center(), subtitle_galley);
+        }
+    }
+
+    /// Draw the player controls. Make sure to call [`Player::procress_state`]. Unless you are explicitly
     /// drawing something in between the video frames and controls, it is probably better to use
     /// [`Player::ui`] or [`Player::ui_at`].
     pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
@@ -608,7 +676,7 @@ impl Player {
                 .linear_multiply(seek_indicator_anim);
             let spinner_size = 20. * seek_indicator_anim;
             ui.painter()
-                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::none()));
+                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::ZERO));
             ui.put(
                 Rect::from_center_size(frame_response.rect.center(), Vec2::splat(spinner_size)),
                 Spinner::new().size(spinner_size),
@@ -677,7 +745,7 @@ impl Player {
 
         let mut shadow_rect = frame_response.rect;
         shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
-        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::none());
+        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::ZERO);
 
         let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
         let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
@@ -686,11 +754,11 @@ impl Player {
 
         ui.painter().rect_filled(
             fullseekbar_rect,
-            Rounding::none(),
+            Rounding::ZERO,
             fullseekbar_color.linear_multiply(0.5),
         );
         ui.painter()
-            .rect_filled(seekbar_rect, Rounding::none(), seekbar_color);
+            .rect_filled(seekbar_rect, Rounding::ZERO, seekbar_color);
         ui.painter().text(
             pause_icon_pos,
             Align2::LEFT_BOTTOM,
@@ -826,7 +894,7 @@ impl Player {
 
     /// Initializes the audio stream (if there is one), required for making a [`Player`] output audio.
     /// Will stop and reset the player's state.
-    pub fn set_audio(&mut self, audio_device: &mut AudioDevice) -> Result<()> {
+    pub fn add_audio(&mut self, audio_device: &mut AudioDevice) -> Result<()> {
         let audio_input_context = input(&self.input_path)?;
         let audio_stream = audio_input_context.streams().best(Type::Audio);
 
@@ -859,7 +927,7 @@ impl Player {
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
                 player_state: self.player_state.clone(),
-                _video_elapsed_ms: self.video_elapsed_ms.clone(),
+                video_elapsed_ms: self.video_elapsed_ms.clone(),
                 audio_elapsed_ms: self.audio_elapsed_ms.clone(),
                 audio_sample_producer,
                 input_context: audio_input_context,
@@ -874,9 +942,50 @@ impl Player {
         Ok(())
     }
 
-    /// Enables using [`Player::set_audio`] with the builder pattern.
+    /// Initializes the subtitle stream (if there is one), required for making a [`Player`] display subtitles.
+    /// Will stop and reset the player's state.
+    pub fn add_subtitles(&mut self) -> Result<()> {
+        let subtitle_input_context = input(&self.input_path)?;
+        let subtitle_stream = subtitle_input_context.streams().best(Type::Subtitle);
+
+        let subtitle_streamer = if let Some(subtitle_stream) = subtitle_stream.as_ref() {
+            let subtitle_stream_index = subtitle_stream.index();
+            let subtitle_context =
+                ffmpeg::codec::context::Context::from_parameters(subtitle_stream.parameters())?;
+            let subtitle_decoder = subtitle_context.decoder().subtitle()?;
+
+            self.stop_direct();
+
+            Some(SubtitleStreamer {
+                next_packet: None,
+                currently_dropping_frames: false,
+                duration_ms: self.duration_ms,
+                player_state: self.player_state.clone(),
+                video_elapsed_ms: self.video_elapsed_ms.clone(),
+                _audio_elapsed_ms: self.audio_elapsed_ms.clone(),
+                subtitle_elapsed_ms: self.subtitle_elapsed_ms.clone(),
+                input_context: subtitle_input_context,
+                subtitles_queue: self.subtitles_queue.clone(),
+                subtitle_decoder,
+                subtitle_stream_index,
+            })
+        } else {
+            dbg!("bruh");
+            None
+        };
+        self.subtitle_streamer = subtitle_streamer.map(|s| Arc::new(Mutex::new(s)));
+        Ok(())
+    }
+
+    /// Enables using [`Player::add_audio`] with the builder pattern.
     pub fn with_audio(mut self, audio_device: &mut AudioDevice) -> Result<Self> {
-        self.set_audio(audio_device)?;
+        self.add_audio(audio_device)?;
+        Ok(self)
+    }
+
+    /// Enables using [`Player::add_subtitles`] with the builder pattern.
+    pub fn with_subtitles(mut self) -> Result<Self> {
+        self.add_subtitles()?;
         Ok(self)
     }
 
@@ -922,13 +1031,17 @@ impl Player {
         let mut streamer = Self {
             input_path: input_path.clone(),
             audio_streamer: None,
+            subtitle_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
             framerate,
-            frame_timer: Timer::new(),
+            video_timer: Timer::new(),
             audio_timer: Timer::new(),
+            subtitle_timer: Timer::new(),
+            subtitle_elapsed_ms: Shared::new(0),
             preseek_player_state: None,
-            frame_thread: None,
+            video_thread: None,
+            subtitle_thread: None,
             audio_thread: None,
             texture_handle,
             player_state,
@@ -942,6 +1055,8 @@ impl Player {
             video_elapsed_ms_override: None,
             looping: true,
             ctx_ref: ctx.clone(),
+            subtitles_queue: Arc::new(Mutex::new(VecDeque::new())),
+            current_subtitle: None,
             #[cfg(feature = "from_bytes")]
             temp_file: None,
         };
@@ -993,10 +1108,10 @@ pub trait Streamer: Send {
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
                 // dbg!(e); TODO: propogate error
-            } else if seek_frac < 0.03 {
-                // prevent seek inaccuracy errors near start of stream
-                self.player_state().set(PlayerState::Restarting);
-                return;
+            // } else if seek_frac < 0.03 {
+            //     // prevent seek inaccuracy errors near start of stream
+            //     self.player_state().set(PlayerState::Restarting);
+            //     return;
             } else if seek_frac >= 1.0 {
                 // disable this safeguard for now (fixed?)
                 // prevent inifinite loop near end of stream
@@ -1039,13 +1154,14 @@ pub trait Streamer: Send {
 
     /// The primary streamer will control most of the state/syncing.
     fn is_primary_streamer(&self) -> bool;
-
     /// The stream index.
     fn stream_index(&self) -> usize;
-    /// The elapsed time, in milliseconds.
-    fn elapsed_ms(&mut self) -> &mut Shared<i64>;
+    /// The elapsed time of this streamer, in milliseconds.
+    fn elapsed_ms(&self) -> &Shared<i64>;
+    /// The elapsed time of the primary streamer, in milliseconds.
+    fn primary_elapsed_ms(&self) -> &Shared<i64>;
     /// The total duration of the stream, in milliseconds.
-    fn duration_ms(&mut self) -> i64;
+    fn duration_ms(&self) -> i64;
     /// The streamer's decoder.
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened;
     /// The streamer's input context.
@@ -1129,10 +1245,13 @@ impl Streamer for VideoStreamer {
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
         &mut self.input_context
     }
-    fn elapsed_ms(&mut self) -> &mut Shared<i64> {
-        &mut self.video_elapsed_ms
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
     }
-    fn duration_ms(&mut self) -> i64 {
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
         self.duration_ms
     }
     fn player_state(&self) -> &Shared<PlayerState> {
@@ -1181,10 +1300,13 @@ impl Streamer for AudioStreamer {
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
         &mut self.input_context
     }
-    fn elapsed_ms(&mut self) -> &mut Shared<i64> {
-        &mut self.audio_elapsed_ms
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.audio_elapsed_ms
     }
-    fn duration_ms(&mut self) -> i64 {
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
         self.duration_ms
     }
     fn player_state(&self) -> &Shared<PlayerState> {
@@ -1208,6 +1330,88 @@ impl Streamer for AudioStreamer {
         }
         self.audio_sample_producer.push_slice(audio_samples);
         Ok(())
+    }
+}
+
+impl Streamer for SubtitleStreamer {
+    type Frame = (ffmpeg::codec::subtitle::Subtitle, i64);
+    type ProcessedFrame = (LayoutJob, i64);
+    fn is_primary_streamer(&self) -> bool {
+        false
+    }
+    fn stream_index(&self) -> usize {
+        self.subtitle_stream_index
+    }
+    fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
+        &mut self.subtitle_decoder.0
+    }
+    fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
+        &mut self.input_context
+    }
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.subtitle_elapsed_ms
+    }
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
+        self.duration_ms
+    }
+    fn player_state(&self) -> &Shared<PlayerState> {
+        &self.player_state
+    }
+    fn recieve_next_packet(&mut self) -> Result<()> {
+        if let Some((stream, packet)) = self.input_context().packets().next() {
+            let time_base = stream.time_base();
+            if stream.index() == self.stream_index() {
+                if let Some(dts) = packet.dts() {
+                    self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
+                }
+                self.next_packet = Some(packet);
+            }
+        } else {
+            self.decoder().send_eof()?;
+        }
+        Ok(())
+    }
+    fn decode_frame(&mut self) -> Result<Self::Frame> {
+        if let Some(packet) = self.next_packet.take() {
+            let mut decoded_frame = Subtitle::new();
+            self.subtitle_decoder.decode(&packet, &mut decoded_frame)?;
+            Ok((decoded_frame, packet.duration()))
+        } else {
+            Err(anyhow::anyhow!("no subtitle pkt"))
+        }
+    }
+    fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
+        let (frame, duration) = frame;
+        let subtitle_text = frame
+            .rects()
+            .into_iter()
+            .map(|rect| match rect {
+                ffmpeg::subtitle::Rect::Ass(ass) => {
+                    format!("{}", ass.get())
+                }
+                ffmpeg::subtitle::Rect::Bitmap(bitmap) => {
+                    format!("bitmap")
+                }
+                ffmpeg::subtitle::Rect::None(none) => {
+                    format!("none")
+                }
+                ffmpeg::subtitle::Rect::Text(text) => {
+                    format!("{}", text.get())
+                }
+            })
+            .join("\n").replace(r"\N", "\n");
+        dbg!(&subtitle_text);
+        Ok((
+            LayoutJob::simple(subtitle_text, FontId::default(), Color32::WHITE, 1000.),
+            duration,
+        ))
+    }
+    fn apply_frame(&mut self, frame: Self::ProcessedFrame) {
+        let mut queue = self.subtitles_queue.lock();
+        queue.push_back(frame)
     }
 }
 
