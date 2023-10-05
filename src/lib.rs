@@ -275,7 +275,7 @@ pub enum PlayerState {
     Stopped,
     /// Streams have reached the end of the file.
     EndOfFile,
-    /// Stream is seeking. Inner bool represents whether or not the seek is completed.
+    /// Stream is seeking. Inner bool represents whether or not the seek is currently in progress.
     Seeking(bool),
     /// Playback is paused.
     Paused,
@@ -432,17 +432,25 @@ impl Player {
             }
 
             let video_streamer = self.video_streamer.clone();
-
-            if let Some(audio_streamer) = self.audio_streamer.as_mut() {
-                audio_streamer.lock().seek(seek_frac);
-            };
-            if let Some(subtitle_streamer) = self.subtitle_streamer.as_mut() {
-                subtitle_streamer.lock().seek(seek_frac);
-            };
+            let mut audio_streamer = self.audio_streamer.clone();
+            let mut subtitle_streamer = self.subtitle_streamer.clone();
+            let subtitle_queue = self.subtitles_queue.clone();
 
             self.last_seek_ms = Some((seek_frac as f64 * self.duration_ms as f64) as i64);
             self.set_state(PlayerState::Seeking(true));
 
+            if let Some(audio_streamer) = audio_streamer.take() {
+                std::thread::spawn(move || {
+                    audio_streamer.lock().seek(seek_frac);
+                });
+            };
+            if let Some(subtitle_streamer) = subtitle_streamer.take() {
+                self.current_subtitle = None;
+                std::thread::spawn(move || {
+                    subtitle_queue.lock().clear();
+                    subtitle_streamer.lock().seek(seek_frac);
+                });
+            };
             std::thread::spawn(move || {
                 video_streamer.lock().seek(seek_frac);
             });
@@ -539,8 +547,6 @@ impl Player {
                 }
             }
             PlayerState::Seeking(seek_in_progress) => {
-                self.current_subtitle = None;
-                self.subtitles_queue.lock().clear();
                 if self.last_seek_ms.is_some() {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
                     if !seek_in_progress {
@@ -1100,16 +1106,21 @@ pub trait Streamer: Send {
 
             let seeking_backwards = target_ms < self.elapsed_ms().get();
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
-            
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
                 // dbg!(e); TODO: propogate error
             } else {
                 self.decoder().flush();
+                let mut previous_elapsed_ms = self.elapsed_ms().get();
 
                 // this drop frame loop lets us refresh until current_ts is accurate
                 if seeking_backwards {
                     while !currently_behind_target() {
+                        let next_elapsed_ms = self.elapsed_ms().get();
+                        if next_elapsed_ms > previous_elapsed_ms {
+                            break;
+                        }
+                        previous_elapsed_ms = next_elapsed_ms;
                         if let Err(e) = self.drop_frames() {
                             if is_ffmpeg_eof_error(&e) {
                                 break;
@@ -1179,7 +1190,6 @@ pub trait Streamer: Send {
             }
         } else {
             self.decoder().send_eof()?;
-            // self.player_state().set(PlayerState::EndOfFile);
         }
         Ok(())
     }
@@ -1391,7 +1401,8 @@ impl Streamer for SubtitleStreamer {
                     format!("{}", text.get())
                 }
             })
-            .join("\n").replace(r"\N", "\n");
+            .join("\n")
+            .replace(r"\N", "\n");
         dbg!(&subtitle_text);
         Ok((
             LayoutJob::simple(subtitle_text, FontId::default(), Color32::WHITE, 1000.),
