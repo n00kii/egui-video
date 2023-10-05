@@ -323,7 +323,6 @@ pub struct SubtitleStreamer {
     subtitles_queue: SubtitleQueue,
     // resampler: software::resampling::Context,
     // audio_sample_producer: AudioSampleProducer,
-    currently_dropping_frames: bool,
     input_context: Input,
     player_state: Shared<PlayerState>,
 }
@@ -958,7 +957,6 @@ impl Player {
 
             Some(SubtitleStreamer {
                 next_packet: None,
-                currently_dropping_frames: false,
                 duration_ms: self.duration_ms,
                 player_state: self.player_state.clone(),
                 video_elapsed_ms: self.video_elapsed_ms.clone(),
@@ -1095,7 +1093,6 @@ pub trait Streamer: Send {
     fn seek(&mut self, seek_frac: f32) {
         let target_ms = (seek_frac as f64 * self.duration_ms() as f64) as i64;
         let seek_completed = millisec_approx_eq(target_ms, self.elapsed_ms().get());
-
         // stop seeking near target so we dont waste cpu cycles
         if !seek_completed {
             let elapsed_ms = self.elapsed_ms().clone();
@@ -1103,21 +1100,13 @@ pub trait Streamer: Send {
 
             let seeking_backwards = target_ms < self.elapsed_ms().get();
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
-            // let player_state = self.player_state().clone();
-            // let still_seeking = || matches!(player_state.get(), PlayerState::Seeking(_));
+            
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
                 // dbg!(e); TODO: propogate error
-            // } else if seek_frac < 0.03 {
-            //     // prevent seek inaccuracy errors near start of stream
-            //     self.player_state().set(PlayerState::Restarting);
-            //     return;
-            } else if seek_frac >= 1.0 {
-                // disable this safeguard for now (fixed?)
-                // prevent inifinite loop near end of stream
-                self.player_state().set(PlayerState::EndOfFile);
-                return;
             } else {
+                self.decoder().flush();
+
                 // this drop frame loop lets us refresh until current_ts is accurate
                 if seeking_backwards {
                     while !currently_behind_target() {
