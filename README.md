@@ -4,7 +4,7 @@
 [![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/0.5.2/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
-![Demo](https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23)
+https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
 
 Plays videos in egui from file path or from bytes.
 
