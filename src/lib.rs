@@ -62,7 +62,7 @@
 //!                     }
 //!                 });
 //!
-//!                 let tedit_resp = ui.add_sized(
+//!                 let t_edit_resp = ui.add_sized(
 //!                     [ui.available_width(), ui.available_height()],
 //!                     TextEdit::singleline(&mut self.media_path)
 //!                         .hint_text("click to set path")
@@ -71,8 +71,8 @@
 //!
 //!                 if ui
 //!                     .interact(
-//!                         tedit_resp.rect,
-//!                         tedit_resp.id.with("click_sense"),
+//!                         t_edit_resp.rect,
+//!                         t_edit_resp.id.with("click_sense"),
 //!                         Sense::click(),
 //!                     )
 //!                     .clicked()
@@ -302,7 +302,7 @@ pub struct AudioStreamer {
 }
 
 #[derive(Clone)]
-/// Simple concurrecy of primitive values.
+/// Simple concurrency of primitive values.
 pub struct Shared<T: Copy> {
     raw_value: Arc<Atomic<T>>,
 }
@@ -380,7 +380,7 @@ impl Player {
     pub fn stop(&mut self) {
         self.set_state(PlayerState::Stopped)
     }
-    /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
+    /// Directly stop the stream. Use if you need to immediately end the streams, and/or you
     /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
     pub fn stop_direct(&mut self) {
         self.frame_thread = None;
@@ -429,7 +429,7 @@ impl Player {
             if let Some(streamer) = streamer.upgrade() {
                 if let Some(mut streamer) = streamer.try_lock() {
                     if streamer.player_state().get() == PlayerState::Playing {
-                        match streamer.recieve_next_packet_until_frame() {
+                        match streamer.receive_next_packet_until_frame() {
                             Ok(frame) => streamer.apply_frame(frame),
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
@@ -489,8 +489,8 @@ impl Player {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
                     // if (millisec_approx_eq(video_elapsed_ms, last_seek_ms) || video_elapsed_ms == 0)
                     if !seek_in_progress {
-                        if let Some(previeous_player_state) = self.preseek_player_state {
-                            self.set_state(previeous_player_state)
+                        if let Some(previous_player_state) = self.preseek_player_state {
+                            self.set_state(previous_player_state)
                         }
                         self.video_elapsed_ms_override = None;
                         self.last_seek_ms = None;
@@ -953,7 +953,7 @@ impl Player {
     }
 
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
-        match self.video_streamer.lock().recieve_next_packet_until_frame() {
+        match self.video_streamer.lock().receive_next_packet_until_frame() {
             Ok(first_frame) => {
                 let texture_handle =
                     self.ctx_ref
@@ -989,14 +989,14 @@ pub trait Streamer: Send {
             // let still_seeking = || matches!(player_state.get(), PlayerState::Seeking(_));
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
-                // dbg!(e); TODO: propogate error
+                // dbg!(e); TODO: propagate error
             } else if seek_frac < 0.03 {
                 // prevent seek inaccuracy errors near start of stream
                 self.player_state().set(PlayerState::Restarting);
                 return;
             } else if seek_frac >= 1.0 {
                 // disable this safeguard for now (fixed?)
-                // prevent inifinite loop near end of stream
+                // prevent infinite loop near end of stream
                 self.player_state().set(PlayerState::EndOfFile);
                 return;
             } else {
@@ -1022,7 +1022,7 @@ pub trait Streamer: Send {
 
                 // frame preview
                 if self.is_primary_streamer() {
-                    match self.recieve_next_packet_until_frame() {
+                    match self.receive_next_packet_until_frame() {
                         Ok(frame) => self.apply_frame(frame),
                         _ => (),
                     }
@@ -1054,13 +1054,13 @@ pub trait Streamer: Send {
     /// Ignore the remainder of this packet.
     fn drop_frames(&mut self) -> Result<()> {
         if self.decode_frame().is_err() {
-            self.recieve_next_packet()
+            self.receive_next_packet()
         } else {
             self.drop_frames()
         }
     }
-    /// Recieve the next packet of the stream.
-    fn recieve_next_packet(&mut self) -> Result<()> {
+    /// Receive the next packet of the stream.
+    fn receive_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
@@ -1082,16 +1082,16 @@ pub trait Streamer: Send {
         let _ = self.input_context().seek(beginning_seek, ..beginning_seek);
         self.decoder().flush();
     }
-    /// Keep recieving packets until a frame can be decoded.
-    fn recieve_next_packet_until_frame(&mut self) -> Result<Self::ProcessedFrame> {
-        match self.recieve_next_frame() {
+    /// Keep receiving packets until a frame can be decoded.
+    fn receive_next_packet_until_frame(&mut self) -> Result<Self::ProcessedFrame> {
+        match self.receive_next_frame() {
             Ok(frame_result) => Ok(frame_result),
             Err(e) => {
                 if is_ffmpeg_eof_error(&e) {
                     Err(e)
                 } else {
-                    self.recieve_next_packet()?;
-                    self.recieve_next_packet_until_frame()
+                    self.receive_next_packet()?;
+                    self.receive_next_packet_until_frame()
                 }
             }
         }
@@ -1101,7 +1101,7 @@ pub trait Streamer: Send {
     /// Apply a processed frame
     fn apply_frame(&mut self, _frame: Self::ProcessedFrame) {}
     /// Decode and process a frame.
-    fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
+    fn receive_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
             Err(e) => {
