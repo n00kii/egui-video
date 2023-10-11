@@ -952,6 +952,97 @@ impl Player {
         Ok(streamer)
     }
 
+    /* test with
+    ffmpeg -f lavfi -i mptestsrc -preset ultrafast -vcodec libx264 -tune zerolatency -b 900k -f mpegts udp://127.0.0.1:1234
+     */
+    pub fn new_ip(ctx: &egui::Context, input_path: &str) -> Result<Self> {
+        
+        let input_context = input(&format!("{}?overrun_nonfatal=1&fifo_size=5000000",input_path))?;
+        let video_stream = input_context
+            .streams()
+            .best(Type::Video)
+            .ok_or(ffmpeg::Error::StreamNotFound)?;
+        let video_stream_index = video_stream.index();
+        let max_audio_volume = 1.;
+
+        let audio_volume = Shared::new(max_audio_volume / 2.);
+
+        let video_elapsed_ms = Shared::new(0);
+        let audio_elapsed_ms = Shared::new(0);
+        let player_state = Shared::new(PlayerState::Stopped);
+
+        let video_context =
+            ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?;
+        let video_decoder = video_context.decoder().video()?;
+        // let framerate = (video_stream.avg_frame_rate().numerator() as f64)
+        //     / video_stream.avg_frame_rate().denominator() as f64;
+
+
+        let (width, height) = (video_decoder.width(), video_decoder.height());
+        
+        // TODO
+        let duration_ms = 0; // in sec
+        let framerate = 500.;
+        println!("{:?}",framerate);
+
+        let stream_decoder = VideoStreamer {
+            apply_video_frame_fn: None,
+            duration_ms,
+            video_decoder,
+            video_stream_index,
+            _audio_elapsed_ms: audio_elapsed_ms.clone(),
+            video_elapsed_ms: video_elapsed_ms.clone(),
+            input_context,
+            player_state: player_state.clone(),
+            //scaler: frame_scaler,
+        };
+        let texture_options = TextureOptions::LINEAR;
+        let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
+        let mut streamer = Self {
+            input_path: String::from(input_path),
+            audio_streamer: None,
+            video_streamer: Arc::new(Mutex::new(stream_decoder)),
+            texture_options,
+            framerate,
+            frame_timer: Timer::new(),
+            audio_timer: Timer::new(),
+            preseek_player_state: None,
+            frame_thread: None,
+            audio_thread: None,
+            texture_handle,
+            player_state,
+            video_elapsed_ms,
+            audio_elapsed_ms,
+            width,
+            last_seek_ms: None,
+            duration_ms,
+            audio_volume,
+            max_audio_volume,
+            video_elapsed_ms_override: None,
+            looping: true,
+            height,
+            ctx_ref: ctx.clone(),
+            #[cfg(feature = "from_bytes")]
+            temp_file: None,
+        };
+
+        loop {
+            if let Ok(_texture_handle) = streamer.try_set_texture_handle() {
+                break;
+            }
+        }
+        
+        if let Some(mut video_streamer) = streamer.video_streamer.try_lock() {
+            for _ in 0..300 {
+                video_streamer.drop_frames();
+            }
+        }
+
+        streamer.start();
+
+        Ok(streamer)
+    }
+
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
         match self.video_streamer.lock().receive_next_packet_until_frame() {
             Ok(first_frame) => {
