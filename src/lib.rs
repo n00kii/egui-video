@@ -187,8 +187,9 @@ use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
+use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 use timer::{Guard, Timer};
 
 #[cfg(feature = "from_bytes")]
@@ -952,12 +953,11 @@ impl Player {
         Ok(streamer)
     }
 
-    /* test with
-    ffmpeg -f lavfi -i mptestsrc -preset ultrafast -vcodec libx264 -tune zerolatency -b 900k -f mpegts udp://127.0.0.1:1234
-     */
-    pub fn new_ip(ctx: &egui::Context, input_path: &str) -> Result<Self> {
-        
-        let input_context = input(&format!("{}?overrun_nonfatal=1&fifo_size=5000000",input_path))?;
+    /// Create new [`Player`] streaming from socket UDP
+    pub fn new_udp(ctx: &egui::Context, socket: SocketAddr) -> Result<Self> {
+        ffmpeg::log::set_level(ffmpeg::log::Level::Quiet); // udp streaming will have many errors at first
+        let input_path = format!("udp://{}?overrun_nonfatal=1&fifo_size=5000000", socket);
+        let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
             .best(Type::Video)
@@ -974,16 +974,18 @@ impl Player {
         let video_context =
             ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?;
         let video_decoder = video_context.decoder().video()?;
-        // let framerate = (video_stream.avg_frame_rate().numerator() as f64)
-        //     / video_stream.avg_frame_rate().denominator() as f64;
-
-
         let (width, height) = (video_decoder.width(), video_decoder.height());
-        
-        // TODO
-        let duration_ms = 0; // in sec
+
+        // Duration is not relevant for streaming
+        let duration_ms = 0;
+
+        // Framerate is "how often do we check for new frames".
+        // Higher framerate than stream allows closer to "live" stream
         let framerate = 500.;
-        println!("{:?}",framerate);
+
+        // Rate threshold used for "catch-up" to live stream
+        let rate_threshold = (video_stream.avg_frame_rate().numerator()
+            / video_stream.avg_frame_rate().denominator()) as u128;
 
         let stream_decoder = VideoStreamer {
             apply_video_frame_fn: None,
@@ -1031,13 +1033,19 @@ impl Player {
                 break;
             }
         }
-        
-        if let Some(mut video_streamer) = streamer.video_streamer.try_lock() {
-            for _ in 0..300 {
-                video_streamer.drop_frames();
+
+        // Catch up to stream
+        if let Some(mut vid_streamer) = streamer.video_streamer.try_lock() {
+            let mut now = Instant::now();
+            while let Ok(_frame) = vid_streamer.drop_frames() {
+                if now.elapsed().as_millis() >= rate_threshold {
+                    break;
+                };
+                now = Instant::now();
             }
         }
 
+        // Start stream
         streamer.start();
 
         Ok(streamer)

@@ -6,7 +6,7 @@
 
 https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
 
-Plays videos in egui from file path or from bytes.
+Plays videos in egui from file path, bytes or socket (live stream).
 
 ## Dependencies
 

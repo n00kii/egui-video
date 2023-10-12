@@ -1,6 +1,8 @@
 use eframe::NativeOptions;
-use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Vec2, Window};
-use egui_video::{AudioDevice, Player};
+use egui::{CentralPanel, Vec2};
+use egui_video::Player;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 fn main() {
     let _ = eframe::run_native(
         "app",
@@ -23,8 +25,14 @@ impl eframe::App for App {
         ctx.request_repaint();
         CentralPanel::default().show(ctx, |ui| match self.player.as_mut() {
             None => {
-                self.player =
-                    Some(Player::new_ip(ctx, "udp://127.0.0.1:1234").expect("Media not found."));
+                println!("Starting stream");
+                self.player = Some(
+                    Player::new_udp(
+                        ctx,
+                        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234),
+                    )
+                    .expect("Media not found."),
+                );
             }
             Some(p) => {
                 frame.set_window_size(Vec2 {
