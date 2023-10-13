@@ -11,7 +11,6 @@ use nom::multi::{many0, many_till, separated_list0, separated_list1};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::IResult;
-use nom_permutation::permutation_opt;
 
 use super::{FadeEffect, Subtitle, SubtitleField};
 

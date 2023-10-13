@@ -630,7 +630,7 @@ impl Player {
                         center_bottom.y = center_bottom.y.min(last_bottom) - subtitle.margin.bottom;
                         transform.transform_pos(center_bottom)
                     }),
-                Align2::CENTER_CENTER,
+                subtitle.alignment,
                 &subtitle.text,
                 FontId::proportional(transform.transform_pos(Pos2::new(subtitle.font_size, 0.)).x),
                 subtitle.primary_fill,
