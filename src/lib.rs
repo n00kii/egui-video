@@ -167,17 +167,19 @@
 //! ```
 
 extern crate ffmpeg_the_third as ffmpeg;
-use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
+use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
+use egui::emath::RectTransform;
 use egui::epaint::Shadow;
 use egui::load::SizedTexture;
 use egui::text::LayoutJob;
 use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Layout, Pos2, Rect, Response, RichText,
-    Rounding, Sense, Spinner, TextureHandle, TextureOptions, Ui, Vec2,
+    vec2, Align2, Color32, ColorImage, FontId, Image, Pos2, Rect, Response, Rounding, Sense,
+    Spinner, TextureHandle, TextureOptions, Ui, Vec2,
 };
-use ffmpeg::ffi::AV_TIME_BASE;
+use ffmpeg::error::EAGAIN;
+use ffmpeg::ffi::{AVERROR, AVUNERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
@@ -187,23 +189,16 @@ use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
 use itertools::Itertools;
-use nom::branch::{alt, permutation};
-use nom::bytes::complete::{escaped, is_not, tag, take_until, take_while1, take_while_m_n};
-use nom::character::complete::{alphanumeric0, alphanumeric1, char, digit0, digit1, one_of};
-use nom::combinator::{eof, map, map_res, not, opt, rest};
-use nom::error::{context, ParseError};
-use nom::multi::{many0, many_till, separated_list0, separated_list1};
-use nom::number::complete::double;
-use nom::sequence::{delimited, pair, preceded, tuple};
-use nom::IResult;
-use nom_permutation::permutation_opt;
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
+use subtitle::Subtitle;
 use timer::{Guard, Timer};
+
+mod subtitle;
 
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
@@ -224,7 +219,7 @@ fn format_duration(dur: Duration) -> String {
 pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
-type SubtitleQueue = Arc<Mutex<VecDeque<(LayoutJob, i64)>>>;
+type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
 type RingbufProducer<T> = ringbuf::Producer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 
@@ -274,7 +269,7 @@ pub struct Player {
     subtitle_elapsed_ms: Shared<i64>,
     video_elapsed_ms_override: Option<i64>,
     subtitles_queue: SubtitleQueue, // text, end_display_time_ms
-    current_subtitle: Option<(LayoutJob, i64)>,
+    current_subtitles: Vec<Subtitle>,
     input_path: String,
 }
 
@@ -455,7 +450,7 @@ impl Player {
                 });
             };
             if let Some(subtitle_streamer) = subtitle_streamer.take() {
-                self.current_subtitle = None;
+                self.current_subtitles.clear();
                 std::thread::spawn(move || {
                     subtitle_queue.lock().clear();
                     subtitle_streamer.lock().seek(seek_frac);
@@ -532,6 +527,7 @@ impl Player {
     /// [`Player::ui_at`].
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
+
         match self.player_state.get() {
             PlayerState::EndOfFile => {
                 if self.looping {
@@ -544,15 +540,15 @@ impl Player {
                 self.stop_direct();
             }
             PlayerState::Playing => {
-                if let Some((_, remaining_duration)) = self.current_subtitle.as_mut() {
-                    *remaining_duration -= self.ctx_ref.input(|i| (i.stable_dt * 1000.) as i64);
+                for subtitle in self.current_subtitles.iter_mut() {
+                    subtitle.remaining_duration_ms -=
+                        self.ctx_ref.input(|i| (i.stable_dt * 1000.) as i64);
                 }
-                if self.current_subtitle.as_ref().is_some_and(|(_, d)| *d <= 0) {
-                    self.current_subtitle = None;
-                }
+                self.current_subtitles
+                    .retain(|s| s.remaining_duration_ms > 0);
                 if let Some(mut queue) = self.subtitles_queue.try_lock() {
                     if queue.len() > 1 {
-                        self.current_subtitle = Some(queue.pop_front().unwrap());
+                        self.current_subtitles.push(queue.pop_front().unwrap());
                     }
                 }
             }
@@ -617,10 +613,29 @@ impl Player {
     /// Draw the subtitles, if any. Only works when a subtitle streamer has been already created with
     /// [`Player::add_subtitles`] or [`Player::with_subtitles`] and a valid subtitle stream exists.
     pub fn render_subtitles(&mut self, ui: &mut Ui, frame_response: &Response) {
-        if let Some((subtitle, _)) = self.current_subtitle.as_ref() {
-            let subtitle_galley = ui.ctx().fonts(|f| f.layout_job(subtitle.clone()));
-            ui.painter()
-                .galley(frame_response.rect.center(), subtitle_galley);
+        let original_rect_center_bottom = Pos2::new(self.size.x / 2., self.size.y);
+        let mut last_bottom = self.size.y;
+        for subtitle in self.current_subtitles.iter() {
+            let transform = RectTransform::from_to(
+                Rect::from_min_size(Pos2::ZERO, self.size),
+                frame_response.rect,
+            );
+            let text_rect = ui.painter().text(
+                subtitle
+                    .position
+                    .map(|p| transform.transform_pos(p))
+                    .unwrap_or_else(|| {
+                        //TODO incorporate left/right margin
+                        let mut center_bottom = original_rect_center_bottom;
+                        center_bottom.y = center_bottom.y.min(last_bottom) - subtitle.margin.bottom;
+                        transform.transform_pos(center_bottom)
+                    }),
+                Align2::CENTER_CENTER,
+                &subtitle.text,
+                FontId::proportional(transform.transform_pos(Pos2::new(subtitle.font_size, 0.)).x),
+                subtitle.primary_fill,
+            );
+            last_bottom = transform.inverse().transform_pos(text_rect.center_top()).y;
         }
     }
 
@@ -1070,7 +1085,7 @@ impl Player {
             looping: true,
             ctx_ref: ctx.clone(),
             subtitles_queue: Arc::new(Mutex::new(VecDeque::new())),
-            current_subtitle: None,
+            current_subtitles: Vec::new(),
             #[cfg(feature = "from_bytes")]
             temp_file: None,
         };
@@ -1215,11 +1230,12 @@ pub trait Streamer: Send {
         match self.recieve_next_frame() {
             Ok(frame_result) => Ok(frame_result),
             Err(e) => {
-                if is_ffmpeg_eof_error(&e) {
-                    Err(e)
-                } else {
+                // dbg!(&e, is_ffmpeg_incomplete_error(&e));
+                if is_ffmpeg_incomplete_error(&e) {
                     self.recieve_next_packet()?;
                     self.recieve_next_packet_until_frame()
+                } else {
+                    Err(e)
                 }
             }
         }
@@ -1233,7 +1249,7 @@ pub trait Streamer: Send {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
             Err(e) => {
-                return Err(e.into());
+                return Err(e);
             }
         }
     }
@@ -1344,7 +1360,7 @@ impl Streamer for AudioStreamer {
 
 impl Streamer for SubtitleStreamer {
     type Frame = (ffmpeg::codec::subtitle::Subtitle, i64);
-    type ProcessedFrame = (LayoutJob, i64);
+    type ProcessedFrame = Subtitle;
     fn is_primary_streamer(&self) -> bool {
         false
     }
@@ -1389,260 +1405,22 @@ impl Streamer for SubtitleStreamer {
             self.subtitle_decoder.decode(&packet, &mut decoded_frame)?;
             Ok((decoded_frame, packet.duration()))
         } else {
-            Err(anyhow::anyhow!("no subtitle pkt"))
+            Err(ffmpeg::Error::from(AVERROR(EAGAIN)).into())
         }
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
+        // TODO: manage the case when frame rects len > 1
         let (frame, duration) = frame;
-        let subtitle_text = frame
-            .rects()
-            .into_iter()
-            .map(|rect| match rect {
-                ffmpeg::subtitle::Rect::Ass(ass) => {
-                    format!("{}", ass.get())
-                }
-                ffmpeg::subtitle::Rect::Bitmap(bitmap) => {
-                    format!("[ unsupported bitmap subtitle ]")
-                }
-                ffmpeg::subtitle::Rect::None(none) => String::new(),
-                ffmpeg::subtitle::Rect::Text(text) => {
-                    format!("{}", text.get())
-                }
-            })
-            .join("\n")
-            .replace(r"\N", "\n");
-        dbg!(&subtitle_text);
-        Ok((
-            LayoutJob::simple(subtitle_text, FontId::default(), Color32::WHITE, 1000.),
-            duration,
-        ))
+        if let Some(rect) = frame.rects().next() {
+            Subtitle::from_ffmpeg_rect(rect).map(|s| s.with_duration_ms(duration))
+        } else {
+            anyhow::bail!("no subtitle")
+        }
     }
     fn apply_frame(&mut self, frame: Self::ProcessedFrame) {
         let mut queue = self.subtitles_queue.lock();
         queue.push_back(frame)
     }
-}
-
-fn not_comma<'a>(i: &'a str) -> IResult<&'a str, &'a str> {
-    is_not(",")(i)
-}
-fn comma<'a>(i: &'a str) -> IResult<&'a str, char> {
-    char(',')(i)
-}
-fn opt_comma<'a>(i: &'a str) -> IResult<&'a str, Option<char>> {
-    opt(comma)(i)
-}
-
-fn string_field<'a>(i: &'a str) -> IResult<&'a str, Option<String>> {
-    preceded(
-        opt_comma,
-        map(opt(not_comma), |s| s.map(|s| String::from(s))),
-    )(i)
-}
-
-fn num_field<'a>(i: &'a str) -> IResult<&'a str, i32> {
-    preceded(opt_comma, map_res(digit0, str::parse))(i)
-}
-
-fn ass<'a>(i: &'a str) -> Result<Subtitle> {
-    let (i, (layer, start, style, name, margin_l, margin_r, margin_v, effect, subtitle)) = tuple((
-        context("layer", num_field),
-        context("start", num_field),
-        context("style", string_field),
-        context("name", string_field),
-        context("margin_l", num_field),
-        context("margin_r", num_field),
-        context("margin_v", num_field),
-        context("effect", string_field),
-        context("style override + text", text_field),
-    ))(i)
-    .map_err(|e| anyhow!(format!("subtitle parse failed: {e}")))?;
-
-    Ok(subtitle)
-}
-
-#[derive(Debug)]
-struct Subtitle {
-    text: String,
-    fade: FadeEffect,
-    alignment: Align2,
-    primary_fill: Color32,
-    position: Pos2,
-}
-
-// struct Transition<'a> {
-//     offset_start_ms: i64,
-//     offset_end_ms: i64,
-//     accel: f64,
-//     field: SubtitleField<'a>,
-// }
-
-enum SubtitleField<'a> {
-    Fade(FadeEffect),
-    Alignment(Align2),
-    PrimaryFill(Color32),
-    Position(Pos2),
-    Undefined(&'a str),
-}
-
-#[derive(Debug, Default)]
-struct FadeEffect {
-    fade_in_ms: i64,
-    fade_out_ms: i64,
-}
-
-impl Default for Subtitle {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            fade: FadeEffect {
-                fade_in_ms: 0,
-                fade_out_ms: 0,
-            },
-            alignment: Align2::CENTER_CENTER,
-            primary_fill: Color32::WHITE,
-            position: Pos2::ZERO,
-        }
-    }
-}
-
-impl FadeEffect {
-    fn is_zero(&self) -> bool {
-        self.fade_in_ms == 0 && self.fade_out_ms == 0
-    }
-}
-
-fn num_list<'a>(i: &'a str) -> IResult<&'a str, Vec<f64>> {
-    delimited(char('('), separated_list0(char(','), double), char(')'))(i)
-}
-
-fn tuple_int_2(v: Vec<f64>) -> Result<(i64, i64)> {
-    tuple_float_2(v).map(|v| (v.0 as i64, v.1 as i64))
-}
-
-fn tuple_float_2(v: Vec<f64>) -> Result<(f64, f64)> {
-    const FAIL_TEXT: &str = "invalid number of items";
-    Ok((*v.get(0).context(FAIL_TEXT)?, *v.get(1).context(FAIL_TEXT)?))
-}
-
-fn flatten_opt<T>(r: IResult<&str, Option<Option<T>>>) -> IResult<&str, Option<T>> {
-    r.map(|f| (f.0, f.1.flatten()))
-}
-
-fn fad<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    preceded(
-        tag(r"\fad"),
-        map(map_res(num_list, tuple_int_2), |f| {
-            let fade_effect = SubtitleField::Fade(FadeEffect {
-                fade_in_ms: f.0,
-                fade_out_ms: f.1,
-            });
-            fade_effect
-        }),
-    )(i)
-}
-
-fn t<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    preceded(
-        tag(r"\t"),
-        delimited(
-            char('('),
-            map(take_until(")"), |_| {
-                SubtitleField::Undefined("transition not implemented")
-            }),
-            char(')'),
-        ),
-    )(i)
-}
-
-fn an<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    preceded(
-        tag(r"\an"),
-        map_res(digit1, |s: &str| match s.parse::<i64>() {
-            Ok(1) => Ok(SubtitleField::Alignment(Align2::LEFT_BOTTOM)),
-            Ok(2) => Ok(SubtitleField::Alignment(Align2::CENTER_BOTTOM)),
-            Ok(3) => Ok(SubtitleField::Alignment(Align2::RIGHT_BOTTOM)),
-
-            Ok(4) => Ok(SubtitleField::Alignment(Align2::LEFT_CENTER)),
-            Ok(5) => Ok(SubtitleField::Alignment(Align2::CENTER_CENTER)),
-            Ok(6) => Ok(SubtitleField::Alignment(Align2::RIGHT_CENTER)),
-
-            Ok(7) => Ok(SubtitleField::Alignment(Align2::LEFT_TOP)),
-            Ok(8) => Ok(SubtitleField::Alignment(Align2::CENTER_TOP)),
-            Ok(9) => Ok(SubtitleField::Alignment(Align2::RIGHT_TOP)),
-            _ => bail!("invalid alignment"),
-        }),
-    )(i)
-}
-
-fn pos<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    preceded(
-        tag(r"\pos"),
-        map(map_res(num_list, tuple_float_2), |p| {
-            SubtitleField::Position(Pos2::new(p.0 as f32, p.1 as f32))
-        }),
-    )(i)
-}
-
-// credit: example on https://github.com/rust-bakery/nom/tree/main
-fn from_hex(i: &str) -> Result<u8> {
-    dbg!(Ok(u8::from_str_radix(i, 16)?))
-}
-fn is_hex_digit(c: char) -> bool {
-    c.is_digit(16)
-}
-
-fn hex_primary(i: &str) -> IResult<&str, u8> {
-    map_res(take_while_m_n(2, 2, is_hex_digit), from_hex)(i)
-}
-fn hex_to_color32(i: &str) -> IResult<&str, Color32> {
-    let (i, (blue, green, red)) = tuple((hex_primary, hex_primary, hex_primary))(i)?;
-    Ok((i, Color32::from_rgb(red, green, blue)))
-}
-fn _1c<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    delimited(
-        tag(r"\1c&H"),
-        map(hex_to_color32, |c| SubtitleField::PrimaryFill(c)),
-        tag("&"),
-    )(i)
-}
-fn undefined<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
-    map(preceded(char('\\'), take_until(r"\")), |s| {
-        SubtitleField::Undefined(s)
-    })(i)
-}
-fn parse_style<'a>(i: &'a str) -> IResult<&'a str, Subtitle> {
-    let (i, subtitle_style_components) = delimited(
-        char('{'),
-        many0(alt((t, fad, an, pos, _1c, undefined))),
-        tuple((take_until("}"), char('}'))),
-    )(i)?;
-
-    let mut subtitle = Subtitle::default();
-
-    for component in subtitle_style_components {
-        match component {
-            SubtitleField::Fade(fade) => subtitle.fade = fade,
-            SubtitleField::Alignment(alignment) => subtitle.alignment = alignment,
-            SubtitleField::PrimaryFill(primary_fill) => subtitle.primary_fill = primary_fill,
-            SubtitleField::Position(position) => subtitle.position = position,
-            SubtitleField::Undefined(_) => (),
-        }
-    }
-    Ok((i, subtitle))
-}
-
-fn text_field<'a>(i: &'a str) -> IResult<&'a str, Subtitle> {
-    let (i, (mut subtitle, subtitle_text)) = preceded(opt_comma, pair(parse_style, rest))(i)?;
-    subtitle.text = String::from(subtitle_text);
-    Ok((i, subtitle))
-}
-
-#[test]
-fn test() {
-    let style: &str = "2,OPRomaji,bruh,huh";
-    let raw_subtitle = r"518,2,OP_Romaji,,0,0,0,,{\fad(0,0)\blur4\1c&HFFFFFF&\an5\pos(569.79,74.59)\fnComic Sans MS\t(-125.12512512513,-25.125125125125,2,\1c&H000000&)}tsu bro";
-    dbg!(ass(raw_subtitle));
 }
 
 type FfmpegAudioFormat = ffmpeg::format::Sample;
@@ -1739,6 +1517,13 @@ fn is_ffmpeg_eof_error(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<ffmpeg::Error>(),
         Some(ffmpeg::Error::Eof)
+    )
+}
+
+fn is_ffmpeg_incomplete_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ffmpeg::Error>(),
+        Some(ffmpeg::Error::Other { errno } ) if *errno == EAGAIN
     )
 }
 
