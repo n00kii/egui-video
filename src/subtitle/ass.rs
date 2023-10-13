@@ -1,13 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use egui::{Align2, Color32, Pos2};
-use nom::branch::{alt, permutation};
-use nom::bytes::complete::{
-    escaped, is_not, tag, take_till, take_until, take_while1, take_while_m_n,
-};
-use nom::character::complete::{alphanumeric0, alphanumeric1, char, digit0, digit1, one_of};
-use nom::combinator::{eof, map, map_res, not, opt, rest};
-use nom::error::{context, ParseError};
-use nom::multi::{many0, many_till, separated_list0, separated_list1};
+use nom::branch::alt;
+use nom::bytes::complete::{is_not, tag, take_till, take_until, take_while_m_n};
+use nom::character::complete::{char, digit0, digit1};
+use nom::combinator::{map, map_res, opt, rest};
+use nom::error::context;
+use nom::multi::{many0, separated_list0};
 use nom::number::complete::double;
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::IResult;
@@ -32,8 +30,8 @@ fn fad<'a>(i: &'a str) -> IResult<&'a str, SubtitleField> {
         tag(r"\fad"),
         map(map_res(num_list, tuple_int_2), |f| {
             let fade_effect = SubtitleField::Fade(FadeEffect {
-                fade_in_ms: f.0,
-                fade_out_ms: f.1,
+                _fade_in_ms: f.0,
+                _fade_out_ms: f.1,
             });
             fade_effect
         }),
@@ -159,18 +157,19 @@ fn num_field<'a>(i: &'a str) -> IResult<&'a str, i32> {
 }
 
 pub(crate) fn parse_ass_subtitle<'a>(i: &'a str) -> Result<Subtitle> {
-    let (i, (layer, start, style, name, margin_l, margin_r, margin_v, effect, subtitle)) = tuple((
-        context("layer", num_field),
-        context("start", num_field),
-        context("style", string_field),
-        context("name", string_field),
-        context("margin_l", num_field),
-        context("margin_r", num_field),
-        context("margin_v", num_field),
-        context("effect", string_field),
-        context("style override + text", text_field),
-    ))(i)
-    .map_err(|e| anyhow!(format!("subtitle parse failed: {e}")))?;
+    let (_i, (_layer, _start, _style, _name, _margin_l, _margin_r, _margin_v, _effect, subtitle)) =
+        tuple((
+            context("layer", num_field),
+            context("start", num_field),
+            context("style", string_field),
+            context("name", string_field),
+            context("margin_l", num_field),
+            context("margin_r", num_field),
+            context("margin_v", num_field),
+            context("effect", string_field),
+            context("style override + text", text_field),
+        ))(i)
+        .map_err(|e| anyhow!(format!("subtitle parse failed: {e}")))?;
 
     Ok(subtitle)
 }

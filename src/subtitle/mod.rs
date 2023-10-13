@@ -1,5 +1,5 @@
 use anyhow::Result;
-use egui::{text::LayoutJob, Align2, Color32, FontId, Pos2, Margin};
+use egui::{Align2, Color32, Margin, Pos2};
 
 use self::ass::parse_ass_subtitle;
 
@@ -35,8 +35,8 @@ enum SubtitleField<'a> {
 
 #[derive(Debug, Default)]
 pub struct FadeEffect {
-    fade_in_ms: i64,
-    fade_out_ms: i64,
+    _fade_in_ms: i64,
+    _fade_out_ms: i64,
 }
 
 impl Default for Subtitle {
@@ -44,8 +44,8 @@ impl Default for Subtitle {
         Self {
             text: String::new(),
             fade: FadeEffect {
-                fade_in_ms: 0,
-                fade_out_ms: 0,
+                _fade_in_ms: 0,
+                _fade_out_ms: 0,
             },
             remaining_duration_ms: 0,
             font_size: 30.,
@@ -79,14 +79,10 @@ impl Subtitle {
             ffmpeg::subtitle::Rect::Text(text) => Ok(Subtitle::from_text(text.get())),
         }
     }
-    pub(crate) fn to_layout_job(&self) -> LayoutJob {
-        let font_id = FontId::default();
-        LayoutJob::simple(String::from(&self.text), font_id, self.primary_fill, 1000.)
-    }
 }
 
 impl FadeEffect {
-    fn is_zero(&self) -> bool {
-        self.fade_in_ms == 0 && self.fade_out_ms == 0
+    fn _is_zero(&self) -> bool {
+        self._fade_in_ms == 0 && self._fade_out_ms == 0
     }
 }

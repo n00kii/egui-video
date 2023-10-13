@@ -173,13 +173,13 @@ use chrono::{DateTime, Duration, Utc};
 use egui::emath::RectTransform;
 use egui::epaint::Shadow;
 use egui::load::SizedTexture;
-use egui::text::LayoutJob;
+
 use egui::{
     vec2, Align2, Color32, ColorImage, FontId, Image, Pos2, Rect, Response, Rounding, Sense,
     Spinner, TextureHandle, TextureOptions, Ui, Vec2,
 };
 use ffmpeg::error::EAGAIN;
-use ffmpeg::ffi::{AVERROR, AVUNERROR, AV_TIME_BASE};
+use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
@@ -188,7 +188,6 @@ use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
-use itertools::Itertools;
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
