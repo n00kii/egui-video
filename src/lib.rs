@@ -186,6 +186,24 @@ pub struct SubtitleStreamer {
     // audio_sample_producer: AudioSampleProducer,
     input_context: Input,
     player_state: Shared<PlayerState>,
+    subtitle_stream_ids: Vec<usize>,
+}
+
+impl SubtitleStreamer {
+    fn next_stream(&mut self) {
+        for s in self.subtitle_stream_ids.iter() {
+            if s == &self.subtitle_stream_index {
+                self.subtitle_stream_index = self.subtitle_stream_ids[(self
+                    .subtitle_stream_ids
+                    .iter()
+                    .position(|&s| s == self.subtitle_stream_index)
+                    .unwrap()
+                    + 1)
+                    % self.subtitle_stream_ids.len()];
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -614,14 +632,18 @@ impl Player {
         let mut icon_font_id = FontId::default();
         icon_font_id.size = 16.;
 
-        let audio_index_icon = "🔁";
+        let audio_index_icon = "🔁 ";
+        let sub_index_icon = "🔤 ";
 
         let text_y_offset = -7.;
         let sound_icon_offset = vec2(-5., text_y_offset);
         let sound_icon_pos = fullseekbar_rect.right_top() + sound_icon_offset;
 
-        let audio_index_icon_offset = vec2(-20., text_y_offset);
+        let audio_index_icon_offset = vec2(-25., text_y_offset);
         let audio_index_icon_pos = fullseekbar_rect.right_top() + audio_index_icon_offset;
+
+        let sub_index_icon_offset = vec2(-45., text_y_offset);
+        let sub_index_icon_pos = fullseekbar_rect.right_top() + sub_index_icon_offset;
 
         let pause_icon_offset = vec2(3., text_y_offset);
         let pause_icon_pos = fullseekbar_rect.left_top() + pause_icon_offset;
@@ -703,24 +725,34 @@ impl Player {
                 text_color,
             );
 
-            let audio_index_icon_rect = ui.painter().text(
-                audio_index_icon_pos,
-                Align2::RIGHT_BOTTOM,
-                audio_index_icon,
-                icon_font_id.clone(),
-                text_color,
-            );
-
-            if ui
-                .interact(
-                    audio_index_icon_rect,
-                    frame_response.id.with("audio_stream_icon_sense"),
-                    Sense::click(),
-                )
-                .clicked()
+            if self
+                .audio_streamer
+                .as_ref()
+                .unwrap()
+                .lock()
+                .audio_stream_ids
+                .len()
+                > 1
             {
-                if let Some(audio_streamer) = self.audio_streamer.as_mut() {
-                    audio_streamer.lock().next_stream();
+                let audio_index_icon_rect = ui.painter().text(
+                    audio_index_icon_pos,
+                    Align2::RIGHT_BOTTOM,
+                    audio_index_icon,
+                    icon_font_id.clone(),
+                    text_color,
+                );
+
+                if ui
+                    .interact(
+                        audio_index_icon_rect,
+                        frame_response.id.with("subtitle_stream_icon_sense"),
+                        Sense::click(),
+                    )
+                    .clicked()
+                {
+                    if let Some(audio_streamer) = self.audio_streamer.as_mut() {
+                        audio_streamer.lock().next_stream();
+                    }
                 }
             }
 
@@ -788,6 +820,39 @@ impl Player {
                         .max(0.)
                         .min(1.);
                     self.audio_volume.set(sound_frac * self.max_audio_volume);
+                }
+            }
+        }
+
+        if self.subtitle_streamer.is_some() {
+            if self
+                .subtitle_streamer
+                .as_ref()
+                .unwrap()
+                .lock()
+                .subtitle_stream_ids
+                .len()
+                > 1
+            {
+                let subtitle_index_icon_rect = ui.painter().text(
+                    sub_index_icon_pos,
+                    Align2::RIGHT_BOTTOM,
+                    sub_index_icon,
+                    icon_font_id.clone(),
+                    text_color,
+                );
+
+                if ui
+                    .interact(
+                        subtitle_index_icon_rect,
+                        frame_response.id.with("sub_stream_icon_sense"),
+                        Sense::click(),
+                    )
+                    .clicked()
+                {
+                    if let Some(sub_streamer) = self.subtitle_streamer.as_mut() {
+                        sub_streamer.lock().next_stream();
+                    }
                 }
             }
         }
@@ -873,9 +938,12 @@ impl Player {
     /// Will stop and reset the player's state.
     pub fn add_subtitles(&mut self) -> Result<()> {
         let subtitle_input_context = input(&self.input_path)?;
-        let subtitle_stream = subtitle_input_context.streams().best(Type::Subtitle);
-
-        let subtitle_streamer = if let Some(subtitle_stream) = subtitle_stream.as_ref() {
+        let subtitle_streams = subtitle_input_context
+            .streams()
+            .filter(|s| s.parameters().medium() == Type::Subtitle)
+            .collect::<Vec<_>>();
+        let subtitle_stream_ids: Vec<_> = subtitle_streams.iter().map(|s| s.index()).collect();
+        let subtitle_streamer = if let Some(subtitle_stream) = subtitle_streams.first() {
             let subtitle_stream_index = subtitle_stream.index();
             let subtitle_context =
                 ffmpeg::codec::context::Context::from_parameters(subtitle_stream.parameters())?;
@@ -894,12 +962,23 @@ impl Player {
                 subtitles_queue: self.subtitles_queue.clone(),
                 subtitle_decoder,
                 subtitle_stream_index,
+                subtitle_stream_ids,
             })
         } else {
             dbg!("bruh");
             None
         };
         self.subtitle_streamer = subtitle_streamer.map(|s| Arc::new(Mutex::new(s)));
+        Ok(())
+    }
+
+    /// Switches to the next subtitle stream.
+    pub fn next_sub_stream(&mut self) -> Result<()> {
+        if let Some(subtitle_streamer) = self.subtitle_streamer.take() {
+            std::thread::spawn(move || {
+                subtitle_streamer.lock().next_stream();
+            });
+        };
         Ok(())
     }
 
