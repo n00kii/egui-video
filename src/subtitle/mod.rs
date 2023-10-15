@@ -73,7 +73,7 @@ impl Subtitle {
         match rect {
             ffmpeg::subtitle::Rect::Ass(ass) => parse_ass_subtitle(ass.get()),
             ffmpeg::subtitle::Rect::Bitmap(_bitmap) => {
-                Ok(Subtitle::from_text("[ unsupported bitmap subtitle ]"))
+                Ok(Subtitle::from_text("[ unsupported bitmap subtitle ]").with_duration_ms(500))
             }
             ffmpeg::subtitle::Rect::None(_none) => anyhow::bail!("no subtitle"),
             ffmpeg::subtitle::Rect::Text(text) => Ok(Subtitle::from_text(text.get())),
