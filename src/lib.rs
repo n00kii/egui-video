@@ -965,7 +965,6 @@ impl Player {
                 subtitle_stream_indices,
             })
         } else {
-            dbg!("bruh");
             None
         };
         self.subtitle_streamer = subtitle_streamer.map(|s| Arc::new(Mutex::new(s)));
