@@ -1,195 +1,42 @@
 #![warn(missing_docs)]
-//! egui-video
-//! video playback library for [`egui`]
-//!
-//! # Example
-//!
-//! This example can also be found in the `examples` directory.
-//!
-//! ```rust
-//! use eframe::NativeOptions;
-//! use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Window};
-//! use egui_video::{AudioDevice, Player};
-//! fn main() {
-//!     let _ = eframe::run_native(
-//!         "app",
-//!         NativeOptions::default(),
-//!         Box::new(|_| Box::new(App::default())),
-//!     );
-//! }
-//! struct App {
-//!     audio_device: AudioDevice,
-//!     player: Option<Player>,
-//!
-//!     media_path: String,
-//!     stream_size_scale: f32,
-//!     seek_frac: f32,
-//! }
-//!
-//! impl Default for App {
-//!     fn default() -> Self {
-//!         Self {
-//!             audio_device: egui_video::init_audio_device_default())
-//!                 .unwrap(),
-//!             media_path: String::new(),
-//!             stream_size_scale: 1.,
-//!             seek_frac: 0.,
-//!             player: None,
-//!         }
-//!     }
-//! }
-//!
-//! impl eframe::App for App {
-//!     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-//!         ctx.request_repaint();
-//!         CentralPanel::default().show(ctx, |ui| {
-//!             ui.horizontal(|ui| {
-//!                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
-//!                     if ui.button("load").clicked() {
-//!                         match Player::new(ctx, &self.media_path.replace("\"", ""))
-//!                             .and_then(|p| p.with_audio(&mut self.audio_device))
-//!                         {
-//!                             Ok(player) => {
-//!                                 self.player = Some(player);
-//!                             }
-//!                             Err(e) => println!("failed to make stream: {e}"),
-//!                         }
-//!                     }
-//!                 });
-//!                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
-//!                     if ui.button("clear").clicked() {
-//!                         self.player = None;
-//!                     }
-//!                 });
-//!
-//!                 let tedit_resp = ui.add_sized(
-//!                     [ui.available_width(), ui.available_height()],
-//!                     TextEdit::singleline(&mut self.media_path)
-//!                         .hint_text("click to set path")
-//!                         .interactive(false),
-//!                 );
-//!
-//!                 if ui
-//!                     .interact(
-//!                         tedit_resp.rect,
-//!                         tedit_resp.id.with("click_sense"),
-//!                         Sense::click(),
-//!                     )
-//!                     .clicked()
-//!                 {
-//!                     if let Some(path_buf) = rfd::FileDialog::new()
-//!                         .add_filter("videos", &["mp4", "gif", "webm"])
-//!                         .pick_file()
-//!                     {
-//!                         self.media_path = path_buf.as_path().to_string_lossy().to_string();
-//!                     }
-//!                 }
-//!             });
-//!             ui.separator();
-//!             if let Some(player) = self.player.as_mut() {
-//!                 Window::new("info").show(ctx, |ui| {
-//!                     Grid::new("info_grid").show(ui, |ui| {
-//!                         ui.label("frame rate");
-//!                         ui.label(player.framerate.to_string());
-//!                         ui.end_row();
-//!
-//!                         ui.label("size");
-//!                         ui.label(format!("{}x{}", player.width, player.height));
-//!                         ui.end_row();
-//!
-//!                         ui.label("elapsed / duration");
-//!                         ui.label(player.duration_text());
-//!                         ui.end_row();
-//!
-//!                         ui.label("state");
-//!                         ui.label(format!("{:?}", player.player_state.get()));
-//!                         ui.end_row();
-//!
-//!                         ui.label("has audio?");
-//!                         ui.label(player.audio_streamer.is_some().to_string());
-//!                         ui.end_row();
-//!                     });
-//!                 });
-//!                 Window::new("controls").show(ctx, |ui| {
-//!                     ui.horizontal(|ui| {
-//!                         if ui.button("seek to:").clicked() {
-//!                             player.seek(self.seek_frac);
-//!                         }
-//!                         ui.add(
-//!                             DragValue::new(&mut self.seek_frac)
-//!                                 .speed(0.05)
-//!                                 .clamp_range(0.0..=1.0),
-//!                         );
-//!                         ui.checkbox(&mut player.looping, "loop");
-//!                     });
-//!                     ui.horizontal(|ui| {
-//!                         ui.label("size scale");
-//!                         ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.));
-//!                     });
-//!                     ui.separator();
-//!                     ui.horizontal(|ui| {
-//!                         if ui.button("play").clicked() {
-//!                             player.start()
-//!                         }
-//!                         if ui.button("unpause").clicked() {
-//!                             player.resume();
-//!                         }
-//!                         if ui.button("pause").clicked() {
-//!                             player.pause();
-//!                         }
-//!                         if ui.button("stop").clicked() {
-//!                             player.stop();
-//!                         }
-//!                     });
-//!                     ui.horizontal(|ui| {
-//!                         ui.label("volume");
-//!                         let mut volume = player.audio_volume.get();
-//!                         if ui
-//!                             .add(Slider::new(&mut volume, 0.0..=player.max_audio_volume))
-//!                             .changed()
-//!                         {
-//!                             player.audio_volume.set(volume);
-//!                         };
-//!                     });
-//!                 });
-//!
-//!                 player.ui(
-//!                     ui,
-//!                     [
-//!                         player.width as f32 * self.stream_size_scale,
-//!                         player.height as f32 * self.stream_size_scale,
-//!                     ],
-//!                 );
-//!             }
-//!         });
-//!     }
-//! }
+#![allow(rustdoc::bare_urls)]
+#![doc = include_str!("../README.md")]
+//! # Simple video player example
 //! ```
-
+#![doc = include_str!("../examples/main.rs")]
+//! ```
 extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
+use egui::emath::RectTransform;
 use egui::epaint::Shadow;
+use egui::load::SizedTexture;
+
 use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Rect, Response, Rounding, Sense, Spinner,
-    TextureHandle, TextureOptions, Ui, Vec2,
+    vec2, Align2, Color32, ColorImage, FontId, Image, Pos2, Rect, Response, Rounding, Sense,
+    Spinner, TextureHandle, TextureOptions, Ui, Vec2,
 };
-use ffmpeg::ffi::AV_TIME_BASE;
+use ffmpeg::error::EAGAIN;
+use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
 use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
-use ffmpeg::{rescale, Rational, Rescale};
+use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
+use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
+use subtitle::Subtitle;
 use timer::{Guard, Timer};
+
+mod subtitle;
 
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
@@ -209,8 +56,15 @@ fn format_duration(dur: Duration) -> String {
 /// The playback device. Needs to be initialized (and kept alive!) for use by a [`Player`].
 pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
 
-type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
+enum PlayerMessage {
+    StreamCycled(Type),
+}
 
+type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
+type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
+
+type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
+type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
 type RingbufProducer<T> = ringbuf::Producer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
 
@@ -225,6 +79,9 @@ pub struct Player {
     /// The audio streamer of the player. Won't exist unless [`Player::with_audio`] is called and there exists
     /// a valid audio stream in the file.
     pub audio_streamer: Option<Arc<Mutex<AudioStreamer>>>,
+    /// The subtitle streamer of the player. Won't exist unless [`Player::with_subtitles`] is called and there exists
+    /// a valid subtitle stream in the file.
+    pub subtitle_streamer: Option<Arc<Mutex<SubtitleStreamer>>>,
     /// The state of the player.
     pub player_state: Shared<PlayerState>,
     /// The framerate of the video stream.
@@ -232,21 +89,26 @@ pub struct Player {
     texture_options: TextureOptions,
     /// The player's texture handle.
     pub texture_handle: TextureHandle,
-    /// The height of the video stream.
-    pub height: u32,
-    /// The width of the video stream.
-    pub width: u32,
-    frame_timer: Timer,
-    audio_timer: Timer,
-    audio_thread: Option<Guard>,
-    frame_thread: Option<Guard>,
-    ctx_ref: egui::Context,
+    /// The size of the video stream.
+    pub size: Vec2,
     /// Should the stream loop if it finishes?
     pub looping: bool,
     /// The volume of the audio stream.
     pub audio_volume: Shared<f32>,
     /// The maximum volume of the audio stream.
     pub max_audio_volume: f32,
+
+    audio_stream_info: (usize, usize),
+    subtitle_stream_info: (usize, usize),
+    message_sender: PlayerMessageSender,
+    message_reciever: PlayerMessageReciever,
+    video_timer: Timer,
+    audio_timer: Timer,
+    subtitle_timer: Timer,
+    audio_thread: Option<Guard>,
+    video_thread: Option<Guard>,
+    subtitle_thread: Option<Guard>,
+    ctx_ref: egui::Context,
     duration_ms: i64,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
@@ -254,7 +116,10 @@ pub struct Player {
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Shared<i64>,
     audio_elapsed_ms: Shared<i64>,
+    subtitle_elapsed_ms: Shared<i64>,
     video_elapsed_ms_override: Option<i64>,
+    subtitles_queue: SubtitleQueue,
+    current_subtitles: Vec<Subtitle>,
     input_path: String,
 }
 
@@ -265,7 +130,7 @@ pub enum PlayerState {
     Stopped,
     /// Streams have reached the end of the file.
     EndOfFile,
-    /// Stream is seeking. Inner bool represents whether or not the seek is completed.
+    /// Stream is seeking. Inner bool represents whether or not the seek is currently in progress.
     Seeking(bool),
     /// Playback is paused.
     Paused,
@@ -284,21 +149,34 @@ pub struct VideoStreamer {
     input_context: Input,
     video_elapsed_ms: Shared<i64>,
     _audio_elapsed_ms: Shared<i64>,
-    //scaler: software::scaling::Context,
     apply_video_frame_fn: Option<ApplyVideoFrameFn>,
 }
 
 /// Streams audio.
 pub struct AudioStreamer {
-    _video_elapsed_ms: Shared<i64>,
+    video_elapsed_ms: Shared<i64>,
     audio_elapsed_ms: Shared<i64>,
-    audio_stream_index: usize,
     duration_ms: i64,
     audio_decoder: ffmpeg::decoder::Audio,
     resampler: software::resampling::Context,
     audio_sample_producer: AudioSampleProducer,
     input_context: Input,
     player_state: Shared<PlayerState>,
+    audio_stream_indices: VecDeque<usize>,
+}
+
+/// Streams subtitles.
+pub struct SubtitleStreamer {
+    video_elapsed_ms: Shared<i64>,
+    _audio_elapsed_ms: Shared<i64>,
+    subtitle_elapsed_ms: Shared<i64>,
+    duration_ms: i64,
+    subtitle_decoder: ffmpeg::decoder::Subtitle,
+    next_packet: Option<Packet>,
+    subtitles_queue: SubtitleQueue,
+    input_context: Input,
+    player_state: Shared<PlayerState>,
+    subtitle_stream_indices: VecDeque<usize>,
 }
 
 #[derive(Clone)]
@@ -383,7 +261,7 @@ impl Player {
     /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
     /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
     pub fn stop_direct(&mut self) {
-        self.frame_thread = None;
+        self.video_thread = None;
         self.audio_thread = None;
         self.reset()
     }
@@ -406,14 +284,25 @@ impl Player {
             }
 
             let video_streamer = self.video_streamer.clone();
-
-            if let Some(audio_streamer) = self.audio_streamer.as_mut() {
-                audio_streamer.lock().seek(seek_frac);
-            };
+            let mut audio_streamer = self.audio_streamer.clone();
+            let mut subtitle_streamer = self.subtitle_streamer.clone();
+            let subtitle_queue = self.subtitles_queue.clone();
 
             self.last_seek_ms = Some((seek_frac as f64 * self.duration_ms as f64) as i64);
             self.set_state(PlayerState::Seeking(true));
 
+            if let Some(audio_streamer) = audio_streamer.take() {
+                std::thread::spawn(move || {
+                    audio_streamer.lock().seek(seek_frac);
+                });
+            };
+            if let Some(subtitle_streamer) = subtitle_streamer.take() {
+                self.current_subtitles.clear();
+                std::thread::spawn(move || {
+                    subtitle_queue.lock().clear();
+                    subtitle_streamer.lock().seek(seek_frac);
+                });
+            };
             std::thread::spawn(move || {
                 video_streamer.lock().seek(seek_frac);
             });
@@ -428,7 +317,9 @@ impl Player {
         fn play<T: Streamer>(streamer: &Weak<Mutex<T>>) {
             if let Some(streamer) = streamer.upgrade() {
                 if let Some(mut streamer) = streamer.try_lock() {
-                    if streamer.player_state().get() == PlayerState::Playing {
+                    if (streamer.player_state().get() == PlayerState::Playing)
+                        && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
+                    {
                         match streamer.recieve_next_packet_until_frame() {
                             Ok(frame) => streamer.apply_frame(frame),
                             Err(e) => {
@@ -448,12 +339,12 @@ impl Player {
 
         let video_streamer_ref = Arc::downgrade(&self.video_streamer);
 
-        let frame_timer_guard = self.frame_timer.schedule_repeating(wait_duration, move || {
+        let video_timer_guard = self.video_timer.schedule_repeating(wait_duration, move || {
             play(&video_streamer_ref);
             ctx.request_repaint();
         });
 
-        self.frame_thread = Some(frame_timer_guard);
+        self.video_thread = Some(video_timer_guard);
 
         if let Some(audio_decoder) = self.audio_streamer.as_ref() {
             let audio_decoder_ref = Arc::downgrade(&audio_decoder);
@@ -462,6 +353,14 @@ impl Player {
                 .schedule_repeating(Duration::zero(), move || play(&audio_decoder_ref));
             self.audio_thread = Some(audio_timer_guard);
         }
+
+        if let Some(subtitle_decoder) = self.subtitle_streamer.as_ref() {
+            let subtitle_decoder_ref = Arc::downgrade(&subtitle_decoder);
+            let subtitle_timer_guard = self
+                .subtitle_timer
+                .schedule_repeating(wait_duration, move || play(&subtitle_decoder_ref));
+            self.subtitle_thread = Some(subtitle_timer_guard);
+        }
     }
     /// Start the stream.
     pub fn start(&mut self) {
@@ -469,7 +368,11 @@ impl Player {
         self.spawn_timers();
         self.resume();
     }
-    fn process_state(&mut self) {
+
+    /// Process player state updates. This function must be called for proper function
+    /// of the player. This function is already included in  [`Player::ui`] or
+    /// [`Player::ui_at`].
+    pub fn process_state(&mut self) {
         let mut reset_stream = false;
 
         match self.player_state.get() {
@@ -483,11 +386,22 @@ impl Player {
             PlayerState::Stopped => {
                 self.stop_direct();
             }
+            PlayerState::Playing => {
+                for subtitle in self.current_subtitles.iter_mut() {
+                    subtitle.remaining_duration_ms -=
+                        self.ctx_ref.input(|i| (i.stable_dt * 1000.) as i64);
+                }
+                self.current_subtitles
+                    .retain(|s| s.remaining_duration_ms > 0);
+                if let Some(mut queue) = self.subtitles_queue.try_lock() {
+                    if queue.len() > 1 {
+                        self.current_subtitles.push(queue.pop_front().unwrap());
+                    }
+                }
+            }
             PlayerState::Seeking(seek_in_progress) => {
                 if self.last_seek_ms.is_some() {
-                    // let video_elapsed_ms = self.video_elapsed_ms.get();
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-                    // if (millisec_approx_eq(video_elapsed_ms, last_seek_ms) || video_elapsed_ms == 0)
                     if !seek_in_progress {
                         if let Some(previeous_player_state) = self.preseek_player_state {
                             self.set_state(previeous_player_state)
@@ -504,309 +418,462 @@ impl Player {
             PlayerState::Restarting => reset_stream = true,
             _ => (),
         }
-
+        if let Ok(message) = self.message_reciever.try_recv() {
+            fn increment_stream_info(stream_info: &mut (usize, usize)) {
+                stream_info.0 = ((stream_info.0 + 1) % (stream_info.1 + 1)).max(1);
+            }
+            match message {
+                PlayerMessage::StreamCycled(stream_type) => match stream_type {
+                    Type::Audio => increment_stream_info(&mut self.audio_stream_info),
+                    Type::Subtitle => {
+                        self.current_subtitles.clear();
+                        increment_stream_info(&mut self.subtitle_stream_info);
+                    },
+                    _ => unreachable!(),
+                },
+            }
+        }
         if reset_stream {
             self.reset();
             self.resume();
         }
     }
 
-    /// Draw the player's ui and process state changes.
-    pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> egui::Response {
-        let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
-        let response = ui.add(image);
-        self.render_ui(ui, &response);
-        self.process_state();
-        response
+    /// Create the [`egui::Image`] for the video frame.
+    pub fn generate_frame_image(&self, size: Vec2) -> Image {
+        Image::new(SizedTexture::new(self.texture_handle.id(), size)).sense(Sense::click())
     }
 
-    /// Draw the player's ui with a specific rect, and process state changes.
+    /// Draw the video frame with a specific rect (without controls). Make sure to call [`Player::process_state`].
+    pub fn render_frame(&self, ui: &mut Ui, size: Vec2) -> Response {
+        ui.add(self.generate_frame_image(size))
+    }
+
+    /// Draw the video frame (without controls). Make sure to call [`Player::process_state`].
+    pub fn render_frame_at(&self, ui: &mut Ui, rect: Rect) -> Response {
+        ui.put(rect, self.generate_frame_image(rect.size()))
+    }
+
+    /// Draw the video frame and player controls and process state changes.
+    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> egui::Response {
+        let frame_response = self.render_frame(ui, size);
+        self.render_controls(ui, &frame_response);
+        self.render_subtitles(ui, &frame_response);
+        self.process_state();
+        frame_response
+    }
+
+    /// Draw the video frame and player controls with a specific rect, and process state changes.
     pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
-        let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
-        let response = ui.put(rect, image);
-        self.render_ui(ui, &response);
+        let frame_response = self.render_frame_at(ui, rect);
+        self.render_controls(ui, &frame_response);
+        self.render_subtitles(ui, &frame_response);
         self.process_state();
-        response
+        frame_response
     }
 
-    fn render_ui(&mut self, ui: &mut Ui, playback_response: &Response) -> Option<Rect> {
-        let hovered = ui.rect_contains_pointer(playback_response.rect);
+    /// Draw the subtitles, if any. Only works when a subtitle streamer has been already created with
+    /// [`Player::add_subtitles`] or [`Player::with_subtitles`] and a valid subtitle stream exists.
+    pub fn render_subtitles(&mut self, ui: &mut Ui, frame_response: &Response) {
+        let original_rect_center_bottom = Pos2::new(self.size.x / 2., self.size.y);
+        let mut last_bottom = self.size.y;
+        for subtitle in self.current_subtitles.iter() {
+            let transform = RectTransform::from_to(
+                Rect::from_min_size(Pos2::ZERO, self.size),
+                frame_response.rect,
+            );
+            let text_rect = ui.painter().text(
+                subtitle
+                    .position
+                    .map(|p| transform.transform_pos(p))
+                    .unwrap_or_else(|| {
+                        //TODO incorporate left/right margin
+                        let mut center_bottom = original_rect_center_bottom;
+                        center_bottom.y = center_bottom.y.min(last_bottom) - subtitle.margin.bottom;
+                        transform.transform_pos(center_bottom)
+                    }),
+                subtitle.alignment,
+                &subtitle.text,
+                FontId::proportional(transform.transform_pos(Pos2::new(subtitle.font_size, 0.)).x),
+                subtitle.primary_fill,
+            );
+            last_bottom = transform.inverse().transform_pos(text_rect.center_top()).y;
+        }
+    }
+
+    /// Draw the player controls. Make sure to call [`Player::process_state()`]. Unless you are explicitly
+    /// drawing something in between the video frames and controls, it is probably better to use
+    /// [`Player::ui`] or [`Player::ui_at`].
+    pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
+        let hovered = ui.rect_contains_pointer(frame_response.rect);
         let currently_seeking = matches!(self.player_state.get(), PlayerState::Seeking(_));
         let is_stopped = matches!(self.player_state.get(), PlayerState::Stopped);
         let is_paused = matches!(self.player_state.get(), PlayerState::Paused);
+        let animation_time = 0.2;
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
-            playback_response.id.with("seekbar_anim"),
+            frame_response.id.with("seekbar_anim"),
             hovered || currently_seeking || is_paused || is_stopped,
-            0.2,
+            animation_time,
         );
 
-        if seekbar_anim_frac > 0. {
-            let seekbar_width_offset = 20.;
-            let fullseekbar_width = playback_response.rect.width() - seekbar_width_offset;
+        if seekbar_anim_frac <= 0. {
+            return;
+        }
 
-            let seekbar_width = fullseekbar_width * self.duration_frac();
+        let seekbar_width_offset = 20.;
+        let fullseekbar_width = frame_response.rect.width() - seekbar_width_offset;
 
-            let seekbar_offset = 20.;
-            let seekbar_pos = playback_response.rect.left_bottom()
-                + vec2(seekbar_width_offset / 2., -seekbar_offset);
-            let seekbar_height = 3.;
-            let mut fullseekbar_rect =
-                Rect::from_min_size(seekbar_pos, vec2(fullseekbar_width, seekbar_height));
+        let seekbar_width = fullseekbar_width * self.duration_frac();
 
-            let mut seekbar_rect =
-                Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
-            let seekbar_interact_rect = fullseekbar_rect.expand(10.);
-            ui.interact(seekbar_interact_rect, playback_response.id, Sense::drag());
+        let seekbar_offset = 20.;
+        let seekbar_pos =
+            frame_response.rect.left_bottom() + vec2(seekbar_width_offset / 2., -seekbar_offset);
+        let seekbar_height = 3.;
+        let mut fullseekbar_rect =
+            Rect::from_min_size(seekbar_pos, vec2(fullseekbar_width, seekbar_height));
 
-            let seekbar_response = ui.interact(
-                seekbar_interact_rect,
-                playback_response.id.with("seekbar"),
-                Sense::click_and_drag(),
+        let mut seekbar_rect =
+            Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
+        let seekbar_interact_rect = fullseekbar_rect.expand(10.);
+        ui.interact(seekbar_interact_rect, frame_response.id, Sense::drag());
+
+        let seekbar_response = ui.interact(
+            seekbar_interact_rect,
+            frame_response.id.with("seekbar"),
+            Sense::click_and_drag(),
+        );
+
+        let seekbar_hovered = seekbar_response.hovered();
+        let seekbar_hover_anim_frac = ui.ctx().animate_bool_with_time(
+            frame_response.id.with("seekbar_hover_anim"),
+            seekbar_hovered || currently_seeking,
+            animation_time,
+        );
+
+        if seekbar_hover_anim_frac > 0. {
+            let new_top = fullseekbar_rect.top() - (3. * seekbar_hover_anim_frac);
+            fullseekbar_rect.set_top(new_top);
+            seekbar_rect.set_top(new_top);
+        }
+
+        let seek_indicator_anim = ui.ctx().animate_bool_with_time(
+            frame_response.id.with("seek_indicator_anim"),
+            currently_seeking,
+            animation_time,
+        );
+
+        if currently_seeking {
+            let mut seek_indicator_shadow = Shadow::big_dark();
+            seek_indicator_shadow.color = seek_indicator_shadow
+                .color
+                .linear_multiply(seek_indicator_anim);
+            let spinner_size = 20. * seek_indicator_anim;
+            ui.painter()
+                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::ZERO));
+            ui.put(
+                Rect::from_center_size(frame_response.rect.center(), Vec2::splat(spinner_size)),
+                Spinner::new().size(spinner_size),
             );
+        }
 
-            let seekbar_hovered = seekbar_response.hovered();
-            let seekbar_hover_anim_frac = ui.ctx().animate_bool_with_time(
-                playback_response.id.with("seekbar_hover_anim"),
-                seekbar_hovered || currently_seeking,
-                0.2,
-            );
-
-            if seekbar_hover_anim_frac > 0. {
-                let new_top = fullseekbar_rect.top() - (3. * seekbar_hover_anim_frac);
-                fullseekbar_rect.set_top(new_top);
-                seekbar_rect.set_top(new_top);
-            }
-
-            let seek_indicator_anim = ui.ctx().animate_bool_with_time(
-                playback_response.id.with("seek_indicator_anim"),
-                currently_seeking,
-                0.1,
-            );
-
-            if currently_seeking {
-                let mut seek_indicator_shadow = Shadow::big_dark();
-                seek_indicator_shadow.color = seek_indicator_shadow
-                    .color
-                    .linear_multiply(seek_indicator_anim);
-                let spinner_size = 20. * seek_indicator_anim;
-                ui.painter().add(
-                    seek_indicator_shadow.tessellate(playback_response.rect, Rounding::none()),
-                );
-                ui.put(
-                    Rect::from_center_size(
-                        playback_response.rect.center(),
-                        Vec2::splat(spinner_size),
-                    ),
-                    Spinner::new().size(spinner_size),
-                );
-            }
-
-            if seekbar_hovered || currently_seeking {
-                if let Some(hover_pos) = seekbar_response.hover_pos() {
-                    if seekbar_response.clicked() || seekbar_response.dragged() {
-                        let seek_frac = ((hover_pos - playback_response.rect.left_top()).x
-                            - seekbar_width_offset / 2.)
-                            .max(0.)
-                            .min(fullseekbar_width)
-                            / fullseekbar_width;
-                        seekbar_rect.set_right(
-                            hover_pos
-                                .x
-                                .min(fullseekbar_rect.right())
-                                .max(fullseekbar_rect.left()),
-                        );
-                        if is_stopped {
-                            self.start()
-                        }
-                        self.seek(seek_frac);
+        if seekbar_hovered || currently_seeking {
+            if let Some(hover_pos) = seekbar_response.hover_pos() {
+                if seekbar_response.clicked() || seekbar_response.dragged() {
+                    let seek_frac = ((hover_pos - frame_response.rect.left_top()).x
+                        - seekbar_width_offset / 2.)
+                        .max(0.)
+                        .min(fullseekbar_width)
+                        / fullseekbar_width;
+                    seekbar_rect.set_right(
+                        hover_pos
+                            .x
+                            .min(fullseekbar_rect.right())
+                            .max(fullseekbar_rect.left()),
+                    );
+                    if is_stopped {
+                        self.start()
                     }
+                    self.seek(seek_frac);
                 }
             }
-            let text_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
+        }
+        let text_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
-            let pause_icon = if is_paused {
-                "▶"
-            } else if is_stopped {
-                "◼"
-            } else if currently_seeking {
-                "↔"
-            } else {
-                "⏸"
-            };
-            let audio_volume_frac = self.audio_volume.get() / self.max_audio_volume;
-            let sound_icon = if audio_volume_frac > 0.7 {
-                "🔊"
-            } else if audio_volume_frac > 0.4 {
-                "🔉"
-            } else if audio_volume_frac > 0. {
-                "🔈"
-            } else {
-                "🔇"
-            };
-            let mut icon_font_id = FontId::default();
-            icon_font_id.size = 16.;
+        let pause_icon = if is_paused {
+            "▶"
+        } else if is_stopped {
+            "◼"
+        } else if currently_seeking {
+            "↔"
+        } else {
+            "⏸"
+        };
+        let audio_volume_frac = self.audio_volume.get() / self.max_audio_volume;
+        let sound_icon = if audio_volume_frac > 0.7 {
+            "🔊"
+        } else if audio_volume_frac > 0.4 {
+            "🔉"
+        } else if audio_volume_frac > 0. {
+            "🔈"
+        } else {
+            "🔇"
+        };
 
-            let text_y_offset = -7.;
-            let sound_icon_offset = vec2(-5., text_y_offset);
-            let sound_icon_pos = fullseekbar_rect.right_top() + sound_icon_offset;
+        let mut icon_font_id = FontId::default();
+        icon_font_id.size = 16.;
 
-            let pause_icon_offset = vec2(3., text_y_offset);
-            let pause_icon_pos = fullseekbar_rect.left_top() + pause_icon_offset;
+        let subtitle_icon = "💬";
+        let stream_icon = "🔁";
+        let icon_margin = 5.;
+        let text_y_offset = -7.;
+        let sound_icon_offset = vec2(-5., text_y_offset);
+        let sound_icon_pos = fullseekbar_rect.right_top() + sound_icon_offset;
 
-            let duration_text_offset = vec2(25., text_y_offset);
-            let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
-            let mut duration_text_font_id = FontId::default();
-            duration_text_font_id.size = 14.;
+        let stream_index_icon_offset = vec2(-30., text_y_offset + 1.);
+        let stream_icon_pos = fullseekbar_rect.right_top() + stream_index_icon_offset;
 
-            let mut shadow = Shadow::big_light();
-            shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
+        let contraster_alpha: u8 = 100;
+        let pause_icon_offset = vec2(3., text_y_offset);
+        let pause_icon_pos = fullseekbar_rect.left_top() + pause_icon_offset;
 
-            let mut shadow_rect = playback_response.rect;
-            shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
-            let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::none());
+        let duration_text_offset = vec2(25., text_y_offset);
+        let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
+        let mut duration_text_font_id = FontId::default();
+        duration_text_font_id.size = 14.;
 
-            let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
-            let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
+        let mut shadow = Shadow::big_light();
+        shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
 
-            ui.painter().add(shadow_mesh);
+        let mut shadow_rect = frame_response.rect;
+        shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
+        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::ZERO);
 
-            ui.painter().rect_filled(
-                fullseekbar_rect,
-                Rounding::none(),
-                fullseekbar_color.linear_multiply(0.5),
+        let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
+        let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
+
+        ui.painter().add(shadow_mesh);
+
+        ui.painter().rect_filled(
+            fullseekbar_rect,
+            Rounding::ZERO,
+            fullseekbar_color.linear_multiply(0.5),
+        );
+        ui.painter()
+            .rect_filled(seekbar_rect, Rounding::ZERO, seekbar_color);
+        ui.painter().text(
+            pause_icon_pos,
+            Align2::LEFT_BOTTOM,
+            pause_icon,
+            icon_font_id.clone(),
+            text_color,
+        );
+
+        ui.painter().text(
+            duration_text_pos,
+            Align2::LEFT_BOTTOM,
+            self.duration_text(),
+            duration_text_font_id,
+            text_color,
+        );
+
+        if seekbar_hover_anim_frac > 0. {
+            ui.painter().circle_filled(
+                seekbar_rect.right_center(),
+                7. * seekbar_hover_anim_frac,
+                seekbar_color,
             );
-            ui.painter()
-                .rect_filled(seekbar_rect, Rounding::none(), seekbar_color);
-            ui.painter().text(
-                pause_icon_pos,
-                Align2::LEFT_BOTTOM,
-                pause_icon,
+        }
+
+        if frame_response.clicked() {
+            let mut reset_stream = false;
+            let mut start_stream = false;
+
+            match self.player_state.get() {
+                PlayerState::Stopped => start_stream = true,
+                PlayerState::EndOfFile => reset_stream = true,
+                PlayerState::Paused => self.player_state.set(PlayerState::Playing),
+                PlayerState::Playing => self.player_state.set(PlayerState::Paused),
+                _ => (),
+            }
+
+            if reset_stream {
+                self.reset();
+                self.resume();
+            } else if start_stream {
+                self.start();
+            }
+        }
+
+        let is_subtitle_cyclable = self.subtitle_stream_info.1 > 1;
+        let is_audio_cyclable = self.audio_stream_info.1 > 1;
+
+        if is_audio_cyclable || is_subtitle_cyclable {
+            let stream_icon_rect = ui.painter().text(
+                stream_icon_pos,
+                Align2::RIGHT_BOTTOM,
+                stream_icon,
                 icon_font_id.clone(),
                 text_color,
             );
+            let stream_icon_hovered = ui.rect_contains_pointer(stream_icon_rect);
+            let mut stream_info_hovered = false;
+            let mut cursor = stream_icon_rect.right_top() + vec2(0., 5.);
+            let cursor_offset = vec2(3., 15.);
+            let stream_anim_id = frame_response.id.with("stream_anim");
+            let mut stream_anim_frac: f32 = ui
+                .ctx()
+                .memory_mut(|m| *m.data.get_temp_mut_or_default(stream_anim_id));
 
-            ui.painter().text(
-                duration_text_pos,
-                Align2::LEFT_BOTTOM,
-                self.duration_text(),
-                duration_text_font_id,
-                text_color,
-            );
+            let mut draw_row = |stream_type: Type| {
+                let text = match stream_type {
+                    Type::Audio => format!(
+                        "{} {}/{}",
+                        sound_icon, self.audio_stream_info.0, self.audio_stream_info.1
+                    ),
+                    Type::Subtitle => format!(
+                        "{} {}/{}",
+                        subtitle_icon, self.subtitle_stream_info.0, self.subtitle_stream_info.1
+                    ),
+                    _ => unreachable!(),
+                };
 
-            if seekbar_hover_anim_frac > 0. {
-                ui.painter().circle_filled(
-                    seekbar_rect.right_center(),
-                    7. * seekbar_hover_anim_frac,
-                    seekbar_color,
-                );
-            }
+                let text_position = cursor - cursor_offset;
+                let text_galley =
+                    ui.painter()
+                        .layout_no_wrap(text.clone(), icon_font_id.clone(), text_color);
 
-            if playback_response.clicked() {
-                let mut reset_stream = false;
-                let mut start_stream = false;
+                let background_rect =
+                    Rect::from_min_max(text_position - text_galley.size(), text_position)
+                        .expand(5.);
 
-                match self.player_state.get() {
-                    PlayerState::Stopped => start_stream = true,
-                    PlayerState::EndOfFile => reset_stream = true,
-                    PlayerState::Paused => self.player_state.set(PlayerState::Playing),
-                    PlayerState::Playing => self.player_state.set(PlayerState::Paused),
-                    _ => (),
+                let background_color =
+                    Color32::from_black_alpha(contraster_alpha).linear_multiply(stream_anim_frac);
+
+                ui.painter()
+                    .rect_filled(background_rect, Rounding::same(5.), background_color);
+
+                if ui.rect_contains_pointer(background_rect.expand(5.)) {
+                    stream_info_hovered = true;
                 }
-
-                if reset_stream {
-                    self.reset();
-                    self.resume();
-                } else if start_stream {
-                    self.start();
-                }
-            }
-
-            if self.audio_streamer.is_some() {
-                let sound_icon_rect = ui.painter().text(
-                    sound_icon_pos,
-                    Align2::RIGHT_BOTTOM,
-                    sound_icon,
-                    icon_font_id.clone(),
-                    text_color,
-                );
 
                 if ui
                     .interact(
-                        sound_icon_rect,
-                        playback_response.id.with("sound_icon_sense"),
+                        background_rect,
+                        frame_response.id.with(&text),
                         Sense::click(),
                     )
                     .clicked()
                 {
-                    if self.audio_volume.get() != 0. {
-                        self.audio_volume.set(0.)
-                    } else {
-                        self.audio_volume.set(self.max_audio_volume / 2.)
-                    }
+                    match stream_type {
+                        Type::Audio => self.cycle_audio_stream(),
+                        Type::Subtitle => self.cycle_subtitle_stream(),
+                        _ => unreachable!(),
+                    };
+                };
+
+                let text_rect = ui.painter().text(
+                    text_position,
+                    Align2::RIGHT_BOTTOM,
+                    text,
+                    icon_font_id.clone(),
+                    text_color.linear_multiply(stream_anim_frac),
+                );
+
+                cursor.y = text_rect.top();
+            };
+
+            if stream_anim_frac > 0. {
+                if is_audio_cyclable {
+                    draw_row(Type::Audio);
                 }
-
-                let sound_slider_outer_height = 75.;
-                let sound_slider_margin = 5.;
-                let sound_slider_opacity = 100;
-                let mut sound_slider_rect = sound_icon_rect;
-                sound_slider_rect.set_bottom(sound_icon_rect.top() - sound_slider_margin);
-                sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
-
-                let sound_slider_interact_rect = sound_slider_rect.expand(sound_slider_margin);
-                let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
-                let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
-                let sound_anim_id = playback_response.id.with("sound_anim");
-                let mut sound_anim_frac: f32 = ui
-                    .ctx()
-                    .memory_mut(|m| *m.data.get_temp_mut_or_default(sound_anim_id));
-                sound_anim_frac = ui.ctx().animate_bool_with_time(
-                    sound_anim_id,
-                    sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
-                    0.2,
-                );
-                ui.ctx()
-                    .memory_mut(|m| m.data.insert_temp(sound_anim_id, sound_anim_frac));
-                let sound_slider_bg_color = Color32::from_black_alpha(sound_slider_opacity)
-                    .linear_multiply(sound_anim_frac);
-                let sound_bar_color = Color32::from_white_alpha(sound_slider_opacity)
-                    .linear_multiply(sound_anim_frac);
-                let mut sound_bar_rect = sound_slider_rect;
-                sound_bar_rect.set_top(
-                    sound_bar_rect.bottom()
-                        - (self.audio_volume.get() / self.max_audio_volume)
-                            * sound_bar_rect.height(),
-                );
-
-                ui.painter().rect_filled(
-                    sound_slider_rect,
-                    Rounding::same(5.),
-                    sound_slider_bg_color,
-                );
-
-                ui.painter()
-                    .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
-                let sound_slider_resp = ui.interact(
-                    sound_slider_rect,
-                    playback_response.id.with("sound_slider_sense"),
-                    Sense::click_and_drag(),
-                );
-                if sound_anim_frac > 0. && sound_slider_resp.clicked()
-                    || sound_slider_resp.dragged()
-                {
-                    if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-                        let sound_frac = 1.
-                            - ((hover_pos - sound_slider_rect.left_top()).y
-                                / sound_slider_rect.height())
-                            .max(0.)
-                            .min(1.);
-                        self.audio_volume.set(sound_frac * self.max_audio_volume);
-                    }
+                if is_subtitle_cyclable {
+                    draw_row(Type::Subtitle);
                 }
             }
 
-            Some(seekbar_interact_rect)
-        } else {
-            None
+            stream_anim_frac = ui.ctx().animate_bool_with_time(
+                stream_anim_id,
+                stream_icon_hovered || (stream_info_hovered && stream_anim_frac > 0.),
+                animation_time,
+            );
+
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(stream_anim_id, stream_anim_frac));
+        }
+
+        if self.audio_streamer.is_some() {
+            let sound_icon_rect = ui.painter().text(
+                sound_icon_pos,
+                Align2::RIGHT_BOTTOM,
+                sound_icon,
+                icon_font_id.clone(),
+                text_color,
+            );
+            if ui
+                .interact(
+                    sound_icon_rect,
+                    frame_response.id.with("sound_icon_sense"),
+                    Sense::click(),
+                )
+                .clicked()
+            {
+                if self.audio_volume.get() != 0. {
+                    self.audio_volume.set(0.)
+                } else {
+                    self.audio_volume.set(self.max_audio_volume / 2.)
+                }
+            }
+
+            let sound_slider_outer_height = 75.;
+
+            let mut sound_slider_rect = sound_icon_rect;
+            sound_slider_rect.set_bottom(sound_icon_rect.top() - icon_margin);
+            sound_slider_rect.set_top(sound_slider_rect.top() - sound_slider_outer_height);
+
+            let sound_slider_interact_rect = sound_slider_rect.expand(icon_margin);
+            let sound_hovered = ui.rect_contains_pointer(sound_icon_rect);
+            let sound_slider_hovered = ui.rect_contains_pointer(sound_slider_interact_rect);
+            let sound_anim_id = frame_response.id.with("sound_anim");
+            let mut sound_anim_frac: f32 = ui
+                .ctx()
+                .memory_mut(|m| *m.data.get_temp_mut_or_default(sound_anim_id));
+            sound_anim_frac = ui.ctx().animate_bool_with_time(
+                sound_anim_id,
+                sound_hovered || (sound_slider_hovered && sound_anim_frac > 0.),
+                0.2,
+            );
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(sound_anim_id, sound_anim_frac));
+            let sound_slider_bg_color =
+                Color32::from_black_alpha(contraster_alpha).linear_multiply(sound_anim_frac);
+            let sound_bar_color =
+                Color32::from_white_alpha(contraster_alpha).linear_multiply(sound_anim_frac);
+            let mut sound_bar_rect = sound_slider_rect;
+            sound_bar_rect.set_top(
+                sound_bar_rect.bottom()
+                    - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
+            );
+
+            ui.painter()
+                .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
+
+            ui.painter()
+                .rect_filled(sound_bar_rect, Rounding::same(5.), sound_bar_color);
+            let sound_slider_resp = ui.interact(
+                sound_slider_rect,
+                frame_response.id.with("sound_slider_sense"),
+                Sense::click_and_drag(),
+            );
+            if sound_anim_frac > 0. && sound_slider_resp.clicked() || sound_slider_resp.dragged() {
+                if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                    let sound_frac = 1.
+                        - ((hover_pos - sound_slider_rect.left_top()).y
+                            / sound_slider_rect.height())
+                        .max(0.)
+                        .min(1.);
+                    self.audio_volume.set(sound_frac * self.max_audio_volume);
+                }
+            }
         }
     }
 
@@ -823,15 +890,15 @@ impl Player {
 
     /// Initializes the audio stream (if there is one), required for making a [`Player`] output audio.
     /// Will stop and reset the player's state.
-    pub fn set_audio(&mut self, audio_device: &mut AudioDevice) -> Result<()> {
+    pub fn add_audio(&mut self, audio_device: &mut AudioDevice) -> Result<()> {
         let audio_input_context = input(&self.input_path)?;
-        let audio_stream = audio_input_context.streams().best(Type::Audio);
+        let audio_stream_indices = get_stream_indices_of_type(&audio_input_context, Type::Audio);
 
-        let audio_streamer = if let Some(audio_stream) = audio_stream.as_ref() {
-            let audio_stream_index = audio_stream.index();
-            let audio_context =
-                ffmpeg::codec::context::Context::from_parameters(audio_stream.parameters())?;
-            let audio_decoder = audio_context.decoder().audio()?;
+        let audio_streamer = if !audio_stream_indices.is_empty() {
+            let audio_decoder =
+                get_decoder_from_stream_index(&audio_input_context, audio_stream_indices[0])?
+                    .audio()?;
+
             let audio_sample_buffer =
                 SharedRb::<f32, Vec<_>>::new(audio_device.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
@@ -852,17 +919,17 @@ impl Player {
             audio_device.resume();
 
             self.stop_direct();
-
+            self.audio_stream_info = (1, audio_stream_indices.len()); // first stream, out of all the other streams
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
                 player_state: self.player_state.clone(),
-                _video_elapsed_ms: self.video_elapsed_ms.clone(),
+                video_elapsed_ms: self.video_elapsed_ms.clone(),
                 audio_elapsed_ms: self.audio_elapsed_ms.clone(),
                 audio_sample_producer,
                 input_context: audio_input_context,
                 audio_decoder,
-                audio_stream_index,
                 resampler: audio_resampler,
+                audio_stream_indices,
             })
         } else {
             None
@@ -871,9 +938,70 @@ impl Player {
         Ok(())
     }
 
-    /// Enables using [`Player::set_audio`] with the builder pattern.
+    /// Initializes the subtitle stream (if there is one), required for making a [`Player`] display subtitles.
+    /// Will stop and reset the player's state.
+    pub fn add_subtitles(&mut self) -> Result<()> {
+        let subtitle_input_context = input(&self.input_path)?;
+        let subtitle_stream_indices =
+            get_stream_indices_of_type(&subtitle_input_context, Type::Subtitle);
+
+        let subtitle_streamer = if !subtitle_stream_indices.is_empty() {
+            let subtitle_decoder =
+                get_decoder_from_stream_index(&subtitle_input_context, subtitle_stream_indices[0])?
+                    .subtitle()?;
+
+            self.stop_direct();
+            self.subtitle_stream_info = (1, subtitle_stream_indices.len()); // first stream, out of all the other streams
+            Some(SubtitleStreamer {
+                next_packet: None,
+                duration_ms: self.duration_ms,
+                player_state: self.player_state.clone(),
+                video_elapsed_ms: self.video_elapsed_ms.clone(),
+                _audio_elapsed_ms: self.audio_elapsed_ms.clone(),
+                subtitle_elapsed_ms: self.subtitle_elapsed_ms.clone(),
+                input_context: subtitle_input_context,
+                subtitles_queue: self.subtitles_queue.clone(),
+                subtitle_decoder,
+                subtitle_stream_indices,
+            })
+        } else {
+            None
+        };
+        self.subtitle_streamer = subtitle_streamer.map(|s| Arc::new(Mutex::new(s)));
+        Ok(())
+    }
+
+    fn cycle_stream<T: Streamer + 'static>(&self, mut streamer: Option<&Arc<Mutex<T>>>) {
+        if let Some(streamer) = streamer.take() {
+            let message_sender = self.message_sender.clone();
+            let streamer = streamer.clone();
+            std::thread::spawn(move || {
+                let mut streamer = streamer.lock();
+                streamer.cycle_stream();
+                message_sender.send(PlayerMessage::StreamCycled(streamer.stream_type()))
+            });
+        };
+    }
+
+    /// Switches to the next subtitle stream.
+    pub fn cycle_subtitle_stream(&mut self) {
+        self.cycle_stream(self.subtitle_streamer.as_ref());
+    }
+
+    /// Switches to the next audio stream.
+    pub fn cycle_audio_stream(&mut self) {
+        self.cycle_stream(self.audio_streamer.as_ref());
+    }
+
+    /// Enables using [`Player::add_audio`] with the builder pattern.
     pub fn with_audio(mut self, audio_device: &mut AudioDevice) -> Result<Self> {
-        self.set_audio(audio_device)?;
+        self.add_audio(audio_device)?;
+        Ok(self)
+    }
+
+    /// Enables using [`Player::add_subtitles`] with the builder pattern.
+    pub fn with_subtitles(mut self) -> Result<Self> {
+        self.add_subtitles()?;
         Ok(self)
     }
 
@@ -900,6 +1028,7 @@ impl Player {
             / video_stream.avg_frame_rate().denominator() as f64;
 
         let (width, height) = (video_decoder.width(), video_decoder.height());
+        let size = Vec2::new(width as f32, height as f32);
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
@@ -911,34 +1040,44 @@ impl Player {
             video_elapsed_ms: video_elapsed_ms.clone(),
             input_context,
             player_state: player_state.clone(),
-            //scaler: frame_scaler,
         };
+
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
+        let (message_sender, message_reciever) = std::sync::mpsc::channel();
         let mut streamer = Self {
             input_path: input_path.clone(),
             audio_streamer: None,
+            subtitle_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
+            subtitle_stream_info: (0, 0),
+            audio_stream_info: (0, 0),
             framerate,
-            frame_timer: Timer::new(),
+            video_timer: Timer::new(),
             audio_timer: Timer::new(),
+            subtitle_timer: Timer::new(),
+            subtitle_elapsed_ms: Shared::new(0),
             preseek_player_state: None,
-            frame_thread: None,
+            video_thread: None,
+            subtitle_thread: None,
             audio_thread: None,
             texture_handle,
             player_state,
+            message_sender,
+            message_reciever,
             video_elapsed_ms,
             audio_elapsed_ms,
-            width,
+            size,
             last_seek_ms: None,
             duration_ms,
             audio_volume,
             max_audio_volume,
             video_elapsed_ms_override: None,
             looping: true,
-            height,
             ctx_ref: ctx.clone(),
+            subtitles_queue: Arc::new(Mutex::new(VecDeque::new())),
+            current_subtitles: Vec::new(),
             #[cfg(feature = "from_bytes")]
             temp_file: None,
         };
@@ -967,6 +1106,26 @@ impl Player {
     }
 }
 
+fn get_stream_indices_of_type(
+    input_context: &Input,
+    stream_type: ffmpeg::media::Type,
+) -> VecDeque<usize> {
+    input_context
+        .streams()
+        .filter_map(|s| (s.parameters().medium() == stream_type).then_some(s.index()))
+        .collect::<VecDeque<_>>()
+}
+
+fn get_decoder_from_stream_index(
+    input_context: &Input,
+    stream_index: usize,
+) -> Result<ffmpeg::decoder::Decoder> {
+    let context = ffmpeg::codec::context::Context::from_parameters(
+        input_context.stream(stream_index).unwrap().parameters(),
+    )?;
+    Ok(context.decoder())
+}
+
 /// Streams data.
 pub trait Streamer: Send {
     /// The associated type of frame used for the stream.
@@ -977,7 +1136,6 @@ pub trait Streamer: Send {
     fn seek(&mut self, seek_frac: f32) {
         let target_ms = (seek_frac as f64 * self.duration_ms() as f64) as i64;
         let seek_completed = millisec_approx_eq(target_ms, self.elapsed_ms().get());
-
         // stop seeking near target so we dont waste cpu cycles
         if !seek_completed {
             let elapsed_ms = self.elapsed_ms().clone();
@@ -985,24 +1143,21 @@ pub trait Streamer: Send {
 
             let seeking_backwards = target_ms < self.elapsed_ms().get();
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
-            // let player_state = self.player_state().clone();
-            // let still_seeking = || matches!(player_state.get(), PlayerState::Seeking(_));
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
                 // dbg!(e); TODO: propogate error
-            } else if seek_frac < 0.03 {
-                // prevent seek inaccuracy errors near start of stream
-                self.player_state().set(PlayerState::Restarting);
-                return;
-            } else if seek_frac >= 1.0 {
-                // disable this safeguard for now (fixed?)
-                // prevent inifinite loop near end of stream
-                self.player_state().set(PlayerState::EndOfFile);
-                return;
             } else {
+                self.decoder().flush();
+                let mut previous_elapsed_ms = self.elapsed_ms().get();
+
                 // this drop frame loop lets us refresh until current_ts is accurate
                 if seeking_backwards {
                     while !currently_behind_target() {
+                        let next_elapsed_ms = self.elapsed_ms().get();
+                        if next_elapsed_ms > previous_elapsed_ms {
+                            break;
+                        }
+                        previous_elapsed_ms = next_elapsed_ms;
                         if let Err(e) = self.drop_frames() {
                             if is_ffmpeg_eof_error(&e) {
                                 break;
@@ -1033,16 +1188,20 @@ pub trait Streamer: Send {
             self.player_state().set(PlayerState::Seeking(false));
         }
     }
-
+    /// The type of data this stream corresponds to.
+    fn stream_type(&self) -> Type;
     /// The primary streamer will control most of the state/syncing.
     fn is_primary_streamer(&self) -> bool;
-
     /// The stream index.
     fn stream_index(&self) -> usize;
-    /// The elapsed time, in milliseconds.
-    fn elapsed_ms(&mut self) -> &mut Shared<i64>;
+    /// Move to the next stream index, if possible, and return the new_stream_index.
+    fn cycle_stream(&mut self) -> usize;
+    /// The elapsed time of this streamer, in milliseconds.
+    fn elapsed_ms(&self) -> &Shared<i64>;
+    /// The elapsed time of the primary streamer, in milliseconds.
+    fn primary_elapsed_ms(&self) -> &Shared<i64>;
     /// The total duration of the stream, in milliseconds.
-    fn duration_ms(&mut self) -> i64;
+    fn duration_ms(&self) -> i64;
     /// The streamer's decoder.
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened;
     /// The streamer's input context.
@@ -1071,7 +1230,6 @@ pub trait Streamer: Send {
             }
         } else {
             self.decoder().send_eof()?;
-            // self.player_state().set(PlayerState::EndOfFile);
         }
         Ok(())
     }
@@ -1087,11 +1245,12 @@ pub trait Streamer: Send {
         match self.recieve_next_frame() {
             Ok(frame_result) => Ok(frame_result),
             Err(e) => {
-                if is_ffmpeg_eof_error(&e) {
-                    Err(e)
-                } else {
+                // dbg!(&e, is_ffmpeg_incomplete_error(&e));
+                if is_ffmpeg_incomplete_error(&e) {
                     self.recieve_next_packet()?;
                     self.recieve_next_packet_until_frame()
+                } else {
+                    Err(e)
                 }
             }
         }
@@ -1105,7 +1264,7 @@ pub trait Streamer: Send {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
             Err(e) => {
-                return Err(e.into());
+                return Err(e);
             }
         }
     }
@@ -1114,11 +1273,17 @@ pub trait Streamer: Send {
 impl Streamer for VideoStreamer {
     type Frame = Video;
     type ProcessedFrame = ColorImage;
+    fn stream_type(&self) -> Type {
+        Type::Video
+    }
     fn is_primary_streamer(&self) -> bool {
         true
     }
     fn stream_index(&self) -> usize {
         self.video_stream_index
+    }
+    fn cycle_stream(&mut self) -> usize {
+        0
     }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.video_decoder.0
@@ -1126,10 +1291,13 @@ impl Streamer for VideoStreamer {
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
         &mut self.input_context
     }
-    fn elapsed_ms(&mut self) -> &mut Shared<i64> {
-        &mut self.video_elapsed_ms
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
     }
-    fn duration_ms(&mut self) -> i64 {
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
         self.duration_ms
     }
     fn player_state(&self) -> &Shared<PlayerState> {
@@ -1166,11 +1334,34 @@ impl Streamer for VideoStreamer {
 impl Streamer for AudioStreamer {
     type Frame = Audio;
     type ProcessedFrame = ();
+    fn stream_type(&self) -> Type {
+        Type::Audio
+    }
     fn is_primary_streamer(&self) -> bool {
         false
     }
     fn stream_index(&self) -> usize {
-        self.audio_stream_index
+        self.audio_stream_indices[0]
+    }
+    fn cycle_stream(&mut self) -> usize {
+        self.audio_stream_indices.rotate_right(1);
+        let new_stream_index = self.stream_index();
+        let new_decoder = get_decoder_from_stream_index(&self.input_context, new_stream_index)
+            .unwrap()
+            .audio()
+            .unwrap();
+        let new_resampler = ffmpeg::software::resampling::context::Context::get(
+            new_decoder.format(),
+            new_decoder.channel_layout(),
+            new_decoder.rate(),
+            self.resampler.output().format,
+            ChannelLayout::STEREO,
+            self.resampler.output().rate,
+        )
+        .unwrap();
+        self.audio_decoder = new_decoder;
+        self.resampler = new_resampler;
+        new_stream_index
     }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.audio_decoder.0
@@ -1178,10 +1369,13 @@ impl Streamer for AudioStreamer {
     fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
         &mut self.input_context
     }
-    fn elapsed_ms(&mut self) -> &mut Shared<i64> {
-        &mut self.audio_elapsed_ms
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.audio_elapsed_ms
     }
-    fn duration_ms(&mut self) -> i64 {
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
         self.duration_ms
     }
     fn player_state(&self) -> &Shared<PlayerState> {
@@ -1208,10 +1402,100 @@ impl Streamer for AudioStreamer {
     }
 }
 
+impl Streamer for SubtitleStreamer {
+    type Frame = (ffmpeg::codec::subtitle::Subtitle, i64);
+    type ProcessedFrame = Subtitle;
+    fn stream_type(&self) -> Type {
+        Type::Subtitle
+    }
+    fn is_primary_streamer(&self) -> bool {
+        false
+    }
+    fn stream_index(&self) -> usize {
+        self.subtitle_stream_indices[0]
+    }
+    fn cycle_stream(&mut self) -> usize {
+        self.subtitle_stream_indices.rotate_right(1);
+        self.subtitle_decoder.flush();
+        let new_stream_index = self.stream_index();
+        let new_decoder = get_decoder_from_stream_index(&self.input_context, new_stream_index)
+            .unwrap()
+            .subtitle()
+            .unwrap();
+        self.next_packet = None;
+        // bandaid: subtitle decoder is always ahead of video decoder, so we need to seek it back to the
+        // video decoder's location in order so that we don't miss possible subtitles when switching streams
+        self.seek(self.primary_elapsed_ms().get() as f32 / self.duration_ms as f32);
+        self.subtitles_queue.lock().clear();
+        self.subtitle_decoder = new_decoder;
+        new_stream_index
+    }
+    fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
+        &mut self.subtitle_decoder.0
+    }
+    fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
+        &mut self.input_context
+    }
+    fn elapsed_ms(&self) -> &Shared<i64> {
+        &self.subtitle_elapsed_ms
+    }
+    fn primary_elapsed_ms(&self) -> &Shared<i64> {
+        &self.video_elapsed_ms
+    }
+    fn duration_ms(&self) -> i64 {
+        self.duration_ms
+    }
+    fn player_state(&self) -> &Shared<PlayerState> {
+        &self.player_state
+    }
+    fn recieve_next_packet(&mut self) -> Result<()> {
+        if let Some((stream, packet)) = self.input_context().packets().next() {
+            let time_base = stream.time_base();
+            if stream.index() == self.stream_index() {
+                if let Some(dts) = packet.dts() {
+                    self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
+                }
+                self.next_packet = Some(packet);
+            }
+        } else {
+            self.decoder().send_eof()?;
+        }
+        Ok(())
+    }
+    fn decode_frame(&mut self) -> Result<Self::Frame> {
+        if let Some(packet) = self.next_packet.take() {
+            let mut decoded_frame = ffmpeg::Subtitle::new();
+            self.subtitle_decoder.decode(&packet, &mut decoded_frame)?;
+            Ok((decoded_frame, packet.duration()))
+        } else {
+            Err(ffmpeg::Error::from(AVERROR(EAGAIN)).into())
+        }
+    }
+    fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
+        // TODO: manage the case when frame rects len > 1
+        let (frame, duration) = frame;
+        if let Some(rect) = frame.rects().next() {
+            Subtitle::from_ffmpeg_rect(rect).map(|s| {
+                if s.remaining_duration_ms == 0 {
+                    s.with_duration_ms(duration)
+                } else {
+                    s
+                }
+            })
+        } else {
+            anyhow::bail!("no subtitle")
+        }
+    }
+    fn apply_frame(&mut self, frame: Self::ProcessedFrame) {
+        let mut queue = self.subtitles_queue.lock();
+        queue.push_back(frame)
+    }
+}
+
 type FfmpegAudioFormat = ffmpeg::format::Sample;
 type FfmpegAudioFormatType = ffmpeg::format::sample::Type;
 trait AsFfmpegSample {
-    fn to_sample(&self) -> ffmpeg::format::Sample;
+    fn to_sample(&self) -> FfmpegAudioFormat;
 }
 
 impl AsFfmpegSample for AudioFormat {
@@ -1302,6 +1586,13 @@ fn is_ffmpeg_eof_error(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<ffmpeg::Error>(),
         Some(ffmpeg::Error::Eof)
+    )
+}
+
+fn is_ffmpeg_incomplete_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ffmpeg::Error>(),
+        Some(ffmpeg::Error::Other { errno } ) if *errno == EAGAIN
     )
 }
 

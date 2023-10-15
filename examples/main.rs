@@ -20,8 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_device: egui_video::init_audio_device_default()
-                .unwrap(),
+            audio_device: egui_video::init_audio_device_default().unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             seek_frac: 0.,
@@ -37,9 +36,10 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
                     if ui.button("load").clicked() {
-                        match Player::new(ctx, &self.media_path.replace("\"", ""))
-                            .and_then(|p| p.with_audio(&mut self.audio_device))
-                        {
+                        match Player::new(ctx, &self.media_path.replace("\"", "")).and_then(|p| {
+                            p.with_audio(&mut self.audio_device)
+                                .and_then(|p| p.with_subtitles())
+                        }) {
                             Ok(player) => {
                                 self.player = Some(player);
                             }
@@ -69,7 +69,7 @@ impl eframe::App for App {
                     .clicked()
                 {
                     if let Some(path_buf) = rfd::FileDialog::new()
-                        .add_filter("videos", &["mp4", "gif", "webm"])
+                        .add_filter("videos", &["mp4", "gif", "webm", "mkv", "ogg"])
                         .pick_file()
                     {
                         self.media_path = path_buf.as_path().to_string_lossy().to_string();
@@ -85,7 +85,7 @@ impl eframe::App for App {
                         ui.end_row();
 
                         ui.label("size");
-                        ui.label(format!("{}x{}", player.width, player.height));
+                        ui.label(format!("{}x{}", player.size.x, player.size.y));
                         ui.end_row();
 
                         ui.label("elapsed / duration");
@@ -98,6 +98,10 @@ impl eframe::App for App {
 
                         ui.label("has audio?");
                         ui.label(player.audio_streamer.is_some().to_string());
+                        ui.end_row();
+
+                        ui.label("has subtitles?");
+                        ui.label(player.subtitle_streamer.is_some().to_string());
                         ui.end_row();
                     });
                 });
@@ -144,13 +148,7 @@ impl eframe::App for App {
                     });
                 });
 
-                player.ui(
-                    ui,
-                    [
-                        player.width as f32 * self.stream_size_scale,
-                        player.height as f32 * self.stream_size_scale,
-                    ],
-                );
+                player.ui(ui, player.size * self.stream_size_scale);
             }
         });
     }
