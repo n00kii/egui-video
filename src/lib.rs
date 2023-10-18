@@ -86,7 +86,6 @@ pub struct Player {
     pub player_state: Shared<PlayerState>,
     /// The framerate of the video stream.
     pub framerate: f64,
-    texture_options: TextureOptions,
     /// The player's texture handle.
     pub texture_handle: TextureHandle,
     /// The size of the video stream.
@@ -97,8 +96,11 @@ pub struct Player {
     pub audio_volume: Shared<f32>,
     /// The maximum volume of the audio stream.
     pub max_audio_volume: f32,
+    /// The total duration of the stream, in milliseconds.
+    pub duration_ms: i64,
 
     audio_stream_info: (usize, usize),
+    texture_options: TextureOptions,
     subtitle_stream_info: (usize, usize),
     message_sender: PlayerMessageSender,
     message_reciever: PlayerMessageReciever,
@@ -109,7 +111,6 @@ pub struct Player {
     video_thread: Option<Guard>,
     subtitle_thread: Option<Guard>,
     ctx_ref: egui::Context,
-    duration_ms: i64,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
     #[cfg(feature = "from_bytes")]
@@ -237,7 +238,9 @@ impl Player {
             audio_decoder.lock().reset();
         }
     }
-    fn elapsed_ms(&self) -> i64 {
+    /// The elapsed duration of the stream, in milliseconds. This value will won't be truly accurate to the decoders
+    /// while seeking, and will instead be overridden with the target seek location (for visual representation purposes).
+    pub fn elapsed_ms(&self) -> i64 {
         self.video_elapsed_ms_override
             .as_ref()
             .map(|i| *i)
