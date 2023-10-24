@@ -30,10 +30,12 @@ use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
+use std::collections::VecDeque;
+use std::net::ToSocketAddrs;
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
+use subtitle::Subtitle;
 use timer::{Guard, Timer};
-
 mod subtitle;
 
 #[cfg(feature = "from_bytes")]
@@ -59,7 +61,7 @@ enum PlayerMessage {
 }
 
 type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
-type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
+type PlayerMessageReceiver = std::sync::mpsc::Receiver<PlayerMessage>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
@@ -101,7 +103,7 @@ pub struct Player {
     texture_options: TextureOptions,
     subtitle_stream_info: (usize, usize),
     message_sender: PlayerMessageSender,
-    message_reciever: PlayerMessageReciever,
+    message_receiver: PlayerMessageReceiver,
     video_timer: Timer,
     audio_timer: Timer,
     subtitle_timer: Timer,
@@ -319,7 +321,7 @@ impl Player {
             if let Some(streamer) = streamer.upgrade() {
                 if let Some(mut streamer) = streamer.try_lock() {
                     if streamer.player_state().get() == PlayerState::Playing {
-                        match streamer.recieve_next_packet_until_frame() {
+                        match streamer.receive_next_packet_until_frame() {
                             Ok(frame) => streamer.apply_frame(frame),
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
@@ -417,7 +419,7 @@ impl Player {
             PlayerState::Restarting => reset_stream = true,
             _ => (),
         }
-        if let Ok(message) = self.message_reciever.try_recv() {
+        if let Ok(message) = self.message_receiver.try_recv() {
             fn increment_stream_info(stream_info: &mut (usize, usize)) {
                 stream_info.0 = ((stream_info.0 + 1) % (stream_info.1 + 1)).max(1);
             }
@@ -427,7 +429,7 @@ impl Player {
                     Type::Subtitle => {
                         self.current_subtitles.clear();
                         increment_stream_info(&mut self.subtitle_stream_info);
-                    },
+                    }
                     _ => unreachable!(),
                 },
             }
@@ -703,10 +705,10 @@ impl Player {
             }
         }
 
-        let is_subtitle_cyclable = self.subtitle_stream_info.1 > 1;
-        let is_audio_cyclable = self.audio_stream_info.1 > 1;
+        let is_subtitle_cycleable = self.subtitle_stream_info.1 > 1;
+        let is_audio_cycleable = self.audio_stream_info.1 > 1;
 
-        if is_audio_cyclable || is_subtitle_cyclable {
+        if is_audio_cycleable || is_subtitle_cycleable {
             let stream_icon_rect = ui.painter().text(
                 stream_icon_pos,
                 Align2::RIGHT_BOTTOM,
@@ -782,10 +784,10 @@ impl Player {
             };
 
             if stream_anim_frac > 0. {
-                if is_audio_cyclable {
+                if is_audio_cycleable {
                     draw_row(Type::Audio);
                 }
-                if is_subtitle_cyclable {
+                if is_subtitle_cycleable {
                     draw_row(Type::Subtitle);
                 }
             }
@@ -1043,7 +1045,7 @@ impl Player {
 
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
-        let (message_sender, message_reciever) = std::sync::mpsc::channel();
+        let (message_sender, message_receiver) = std::sync::mpsc::channel();
         let mut streamer = Self {
             input_path: input_path.clone(),
             audio_streamer: None,
@@ -1064,7 +1066,7 @@ impl Player {
             texture_handle,
             player_state,
             message_sender,
-            message_reciever,
+            message_receiver,
             video_elapsed_ms,
             audio_elapsed_ms,
             size,
@@ -1091,9 +1093,14 @@ impl Player {
     }
 
     /// Create new [`Player`] streaming from socket UDP
-    pub fn new_udp(ctx: &egui::Context, socket: SocketAddr) -> Result<Self> {
-        ffmpeg::log::set_level(ffmpeg::log::Level::Quiet); // udp streaming will have many errors at first
-        let input_path = format!("udp://{}?overrun_nonfatal=1&fifo_size=5000000", socket);
+    pub fn new_udp<T: ToSocketAddrs>(ctx: &egui::Context, socket: T) -> Result<Self> {
+        let input_path = format!(
+            "udp://{}?overrun_nonfatal=1&fifo_size=5000000",
+            socket
+                .to_socket_addrs()?
+                .next()
+                .ok_or(ffmpeg::Error::StreamNotFound)?
+        );
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -1111,7 +1118,7 @@ impl Player {
         let video_context =
             ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?;
         let video_decoder = video_context.decoder().video()?;
-        let (width, height) = (video_decoder.width(), video_decoder.height());
+        let size = Vec2::new(video_decoder.width() as f32, video_decoder.height() as f32);
 
         // Duration is not relevant for streaming
         let duration_ms = 0;
@@ -1119,10 +1126,6 @@ impl Player {
         // Framerate is "how often do we check for new frames".
         // Higher framerate than stream allows closer to "live" stream
         let framerate = 500.;
-
-        // Rate threshold used for "catch-up" to live stream
-        let rate_threshold = (video_stream.avg_frame_rate().numerator()
-            / video_stream.avg_frame_rate().denominator()) as u128;
 
         let stream_decoder = VideoStreamer {
             apply_video_frame_fn: None,
@@ -1136,31 +1139,41 @@ impl Player {
             //scaler: frame_scaler,
         };
         let texture_options = TextureOptions::LINEAR;
+        let (message_sender, message_receiver) = std::sync::mpsc::channel();
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
         let mut streamer = Self {
             input_path: String::from(input_path),
             audio_streamer: None,
+            subtitle_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
+            subtitle_stream_info: (0, 0),
+            audio_stream_info: (0, 0),
             framerate,
-            frame_timer: Timer::new(),
+            video_timer: Timer::new(),
             audio_timer: Timer::new(),
+            subtitle_timer: Timer::new(),
+            subtitle_elapsed_ms: Shared::new(0),
             preseek_player_state: None,
-            frame_thread: None,
+            video_thread: None,
+            subtitle_thread: None,
             audio_thread: None,
             texture_handle,
             player_state,
+            message_sender,
+            message_receiver,
             video_elapsed_ms,
             audio_elapsed_ms,
-            width,
+            size,
             last_seek_ms: None,
             duration_ms,
             audio_volume,
             max_audio_volume,
             video_elapsed_ms_override: None,
             looping: true,
-            height,
             ctx_ref: ctx.clone(),
+            subtitles_queue: Arc::new(Mutex::new(VecDeque::new())),
+            current_subtitles: Vec::new(),
             #[cfg(feature = "from_bytes")]
             temp_file: None,
         };
@@ -1168,17 +1181,6 @@ impl Player {
         loop {
             if let Ok(_texture_handle) = streamer.try_set_texture_handle() {
                 break;
-            }
-        }
-
-        // Catch up to stream
-        if let Some(mut vid_streamer) = streamer.video_streamer.try_lock() {
-            let mut now = Instant::now();
-            while let Ok(_frame) = vid_streamer.drop_frames() {
-                if now.elapsed().as_millis() >= rate_threshold {
-                    break;
-                };
-                now = Instant::now();
             }
         }
 
@@ -1242,14 +1244,14 @@ pub trait Streamer: Send {
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
-                // dbg!(e); TODO: propogate error
+                // dbg!(e); TODO: propagate error
             } else if seek_frac < 0.03 {
                 // prevent seek inaccuracy errors near start of stream
                 self.player_state().set(PlayerState::Restarting);
                 return;
             } else if seek_frac >= 1.0 {
                 // disable this safeguard for now (fixed?)
-                // prevent inifinite loop near end of stream
+                // prevent infinite loop near end of stream
                 self.player_state().set(PlayerState::EndOfFile);
                 return;
             } else {
@@ -1354,8 +1356,8 @@ pub trait Streamer: Send {
                 if is_ffmpeg_eof_error(&e) {
                     Err(e)
                 } else {
-                    self.recieve_next_packet()?;
-                    self.recieve_next_packet_until_frame()
+                    self.receive_next_packet()?;
+                    self.receive_next_packet_until_frame()
                 }
             }
         }
@@ -1553,7 +1555,7 @@ impl Streamer for SubtitleStreamer {
     fn player_state(&self) -> &Shared<PlayerState> {
         &self.player_state
     }
-    fn recieve_next_packet(&mut self) -> Result<()> {
+    fn receive_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {

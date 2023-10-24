@@ -1,7 +1,6 @@
 use eframe::NativeOptions;
-use egui::{CentralPanel, Vec2};
+use egui::CentralPanel;
 use egui_video::Player;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 fn main() {
     let _ = eframe::run_native(
@@ -29,17 +28,14 @@ impl eframe::App for App {
                 self.player = Some(
                     Player::new_udp(
                         ctx,
-                        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234),
+                        "127.0.0.1:1234",
                     )
                     .expect("Media not found."),
                 );
             }
             Some(p) => {
-                frame.set_window_size(Vec2 {
-                    x: p.width as f32,
-                    y: p.height as f32,
-                });
-                p.ui(ui, [p.width as f32, p.height as f32]);
+                frame.set_window_size(p.size);
+                p.ui(ui, p.size);
             }
         });
     }
