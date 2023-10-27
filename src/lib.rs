@@ -882,7 +882,7 @@ impl Player {
 
     #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
-    pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
