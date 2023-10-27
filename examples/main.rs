@@ -20,7 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_device: egui_video::init_audio_device_default().unwrap(),
+            audio_device: AudioDevice::new().unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             seek_frac: 0.,

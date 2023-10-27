@@ -54,7 +54,27 @@ fn format_duration(dur: Duration) -> String {
 }
 
 /// The playback device. Needs to be initialized (and kept alive!) for use by a [`Player`].
-pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
+pub struct AudioDevice(pub(crate) audio::AudioDevice<AudioDeviceCallback>);
+
+impl AudioDevice {
+    /// Create a new [`AudioDevice`] from an existing [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
+    pub fn from_subsystem(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
+        let audio_spec = AudioSpecDesired {
+            freq: Some(44_100),
+            channels: Some(2),
+            samples: None,
+        };
+        let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioDeviceCallback {
+            sample_streams: vec![],
+        })?;
+        Ok(AudioDevice(device))
+    }
+
+    /// Create a new [`AudioDevice`]. Creates an [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
+    pub fn new() -> Result<AudioDevice, String> {
+        Self::from_subsystem(&sdl2::init()?.audio()?)
+    }
+}
 
 enum PlayerMessage {
     StreamCycled(Type),
@@ -431,7 +451,7 @@ impl Player {
                     Type::Subtitle => {
                         self.current_subtitles.clear();
                         increment_stream_info(&mut self.subtitle_stream_info);
-                    },
+                    }
                     _ => unreachable!(),
                 },
             }
@@ -903,23 +923,27 @@ impl Player {
                     .audio()?;
 
             let audio_sample_buffer =
-                SharedRb::<f32, Vec<_>>::new(audio_device.spec().size as usize);
+                SharedRb::<f32, Vec<_>>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
             let audio_resampler = ffmpeg::software::resampling::context::Context::get(
                 audio_decoder.format(),
                 audio_decoder.channel_layout(),
                 audio_decoder.rate(),
-                audio_device.spec().format.to_sample(),
+                audio_device.0.spec().format.to_sample(),
                 ChannelLayout::STEREO,
-                audio_device.spec().freq as u32,
+                audio_device.0.spec().freq as u32,
             )?;
 
-            audio_device.lock().sample_streams.push(AudioSampleStream {
-                sample_consumer: audio_sample_consumer,
-                audio_volume: self.audio_volume.clone(),
-            });
+            audio_device
+                .0
+                .lock()
+                .sample_streams
+                .push(AudioSampleStream {
+                    sample_consumer: audio_sample_consumer,
+                    audio_volume: self.audio_volume.clone(),
+                });
 
-            audio_device.resume();
+            audio_device.0.resume();
 
             self.stop_direct();
             self.audio_stream_info = (1, audio_stream_indices.len()); // first stream, out of all the other streams
@@ -1518,16 +1542,6 @@ impl AsFfmpegSample for AudioFormat {
     }
 }
 
-/// Create a new [`AudioDeviceCallback`] from an existing [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
-pub fn init_audio_device(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
-    AudioDeviceCallback::init(audio_sys)
-}
-
-/// Create a new [`AudioDeviceCallback`]. Creates an [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
-pub fn init_audio_device_default() -> Result<AudioDevice, String> {
-    AudioDeviceCallback::init(&sdl2::init()?.audio()?)
-}
-
 /// Pipes audio samples to SDL2.
 pub struct AudioDeviceCallback {
     sample_streams: Vec<AudioSampleStream>,
@@ -1548,20 +1562,6 @@ impl AudioCallback for AudioDeviceCallback {
                 .map(|s| s.sample_consumer.pop().unwrap_or(0.) * s.audio_volume.get())
                 .sum()
         }
-    }
-}
-
-impl AudioDeviceCallback {
-    fn init(audio_sys: &sdl2::AudioSubsystem) -> Result<AudioDevice, String> {
-        let audio_spec = AudioSpecDesired {
-            freq: Some(44_100),
-            channels: Some(2),
-            samples: None,
-        };
-        let device = audio_sys.open_playback(None, &audio_spec, |_spec| AudioDeviceCallback {
-            sample_streams: vec![],
-        })?;
-        Ok(device)
     }
 }
 

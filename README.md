@@ -15,7 +15,7 @@ plays videos in egui from file path or from bytes
 /* called once (top level initialization) */
 
 { // if using audio...
-    let audio_device = egui_video::init_audio_device_default()?;
+    let audio_device = egui_video::AudioDevice::new()?;
     
     // don't let audio_device drop out of memory! (or else you lose audio)
 
@@ -25,7 +25,7 @@ plays videos in egui from file path or from bytes
 ```rust
 /* called once (creating a player) */
 
-let mut player = Player::new(ctx, my_media_path)?;
+let mut player = egui_video::Player::new(ctx, my_media_path)?;
 
 { // if using audio...
     player = player.with_audio(&mut my_state.audio_device)
@@ -33,7 +33,7 @@ let mut player = Player::new(ctx, my_media_path)?;
 ```
 ```rust
 /* called every frame (showing the player) */
-player.ui(ui, [player.width as f32, player.height as f32]);
+player.ui(ui, player.size);
 ```
 ## contributions
 are welcome :)
