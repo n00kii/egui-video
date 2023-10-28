@@ -91,6 +91,29 @@ type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::May
 type AudioSampleProducer = RingbufProducer<f32>;
 type AudioSampleConsumer = RingbufConsumer<f32>;
 
+/// Configurable aspects of a [`Player`].
+pub struct PlayerOptions {
+    /// Should the stream loop if it finishes?
+    pub looping: bool,
+    /// The volume of the audio stream.
+    pub audio_volume: Shared<f32>,
+    /// The maximum volume of the audio stream.
+    pub max_audio_volume: f32,
+    /// The texture options for the displayed video frame.
+    pub texture_options: TextureOptions,
+}
+
+impl Default for PlayerOptions {
+    fn default() -> Self {
+        Self {
+            looping: true,
+            max_audio_volume: 1.,
+            audio_volume: Shared::new(0.5),
+            texture_options: TextureOptions::default(),
+        }
+    }
+}
+
 /// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file.
 /// Initialize once, and use the [`Player::ui`] or [`Player::ui_at()`] functions to show the playback.
 pub struct Player {
@@ -104,23 +127,17 @@ pub struct Player {
     pub subtitle_streamer: Option<Arc<Mutex<SubtitleStreamer>>>,
     /// The state of the player.
     pub player_state: Shared<PlayerState>,
-    /// The framerate of the video stream.
-    pub framerate: f64,
     /// The player's texture handle.
     pub texture_handle: TextureHandle,
     /// The size of the video stream.
     pub size: Vec2,
-    /// Should the stream loop if it finishes?
-    pub looping: bool,
-    /// The volume of the audio stream.
-    pub audio_volume: Shared<f32>,
-    /// The maximum volume of the audio stream.
-    pub max_audio_volume: f32,
     /// The total duration of the stream, in milliseconds.
     pub duration_ms: i64,
-
+    /// The framerate of the video stream, in frames per second.
+    pub framerate: f64,
+    /// Configures certain aspects of this [`Player`].
+    pub options: PlayerOptions,
     audio_stream_info: (usize, usize),
-    texture_options: TextureOptions,
     subtitle_stream_info: (usize, usize),
     message_sender: PlayerMessageSender,
     message_reciever: PlayerMessageReciever,
@@ -333,7 +350,7 @@ impl Player {
     }
     fn spawn_timers(&mut self) {
         let mut texture_handle = self.texture_handle.clone();
-        let texture_options = self.texture_options.clone();
+        let texture_options = self.options.texture_options.clone();
         let ctx = self.ctx_ref.clone();
         let wait_duration = Duration::milliseconds((1000. / self.framerate) as i64);
 
@@ -400,7 +417,7 @@ impl Player {
 
         match self.player_state.get() {
             PlayerState::EndOfFile => {
-                if self.looping {
+                if self.options.looping {
                     reset_stream = true;
                 } else {
                     self.player_state.set(PlayerState::Stopped);
@@ -631,7 +648,7 @@ impl Player {
         } else {
             "⏸"
         };
-        let audio_volume_frac = self.audio_volume.get() / self.max_audio_volume;
+        let audio_volume_frac = self.options.audio_volume.get() / self.options.max_audio_volume;
         let sound_icon = if audio_volume_frac > 0.7 {
             "🔊"
         } else if audio_volume_frac > 0.4 {
@@ -840,10 +857,12 @@ impl Player {
                 )
                 .clicked()
             {
-                if self.audio_volume.get() != 0. {
-                    self.audio_volume.set(0.)
+                if self.options.audio_volume.get() != 0. {
+                    self.options.audio_volume.set(0.)
                 } else {
-                    self.audio_volume.set(self.max_audio_volume / 2.)
+                    self.options
+                        .audio_volume
+                        .set(self.options.max_audio_volume / 2.)
                 }
             }
 
@@ -872,10 +891,8 @@ impl Player {
             let sound_bar_color =
                 Color32::from_white_alpha(contraster_alpha).linear_multiply(sound_anim_frac);
             let mut sound_bar_rect = sound_slider_rect;
-            sound_bar_rect.set_top(
-                sound_bar_rect.bottom()
-                    - (self.audio_volume.get() / self.max_audio_volume) * sound_bar_rect.height(),
-            );
+            sound_bar_rect
+                .set_top(sound_bar_rect.bottom() - audio_volume_frac * sound_bar_rect.height());
 
             ui.painter()
                 .rect_filled(sound_slider_rect, Rounding::same(5.), sound_slider_bg_color);
@@ -894,7 +911,9 @@ impl Player {
                             / sound_slider_rect.height())
                         .max(0.)
                         .min(1.);
-                    self.audio_volume.set(sound_frac * self.max_audio_volume);
+                    self.options
+                        .audio_volume
+                        .set(sound_frac * self.options.max_audio_volume);
                 }
             }
         }
@@ -940,7 +959,7 @@ impl Player {
                 .sample_streams
                 .push(AudioSampleStream {
                     sample_consumer: audio_sample_consumer,
-                    audio_volume: self.audio_volume.clone(),
+                    audio_volume: self.options.audio_volume.clone(),
                 });
 
             audio_device.0.resume();
@@ -1040,9 +1059,6 @@ impl Player {
             .best(Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
         let video_stream_index = video_stream.index();
-        let max_audio_volume = 1.;
-
-        let audio_volume = Shared::new(max_audio_volume / 2.);
 
         let video_elapsed_ms = Shared::new(0);
         let audio_elapsed_ms = Shared::new(0);
@@ -1068,16 +1084,15 @@ impl Player {
             input_context,
             player_state: player_state.clone(),
         };
-
-        let texture_options = TextureOptions::LINEAR;
-        let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
+        let options = PlayerOptions::default();
+        let texture_handle =
+            ctx.load_texture("vidstream", ColorImage::example(), options.texture_options);
         let (message_sender, message_reciever) = std::sync::mpsc::channel();
         let mut streamer = Self {
             input_path: input_path.clone(),
             audio_streamer: None,
             subtitle_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
-            texture_options,
             subtitle_stream_info: (0, 0),
             audio_stream_info: (0, 0),
             framerate,
@@ -1098,10 +1113,8 @@ impl Player {
             size,
             last_seek_ms: None,
             duration_ms,
-            audio_volume,
-            max_audio_volume,
+            options,
             video_elapsed_ms_override: None,
-            looping: true,
             ctx_ref: ctx.clone(),
             subtitles_queue: Arc::new(Mutex::new(VecDeque::new())),
             current_subtitles: Vec::new(),
@@ -1121,9 +1134,11 @@ impl Player {
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
         match self.video_streamer.lock().recieve_next_packet_until_frame() {
             Ok(first_frame) => {
-                let texture_handle =
-                    self.ctx_ref
-                        .load_texture("vidstream", first_frame, self.texture_options);
+                let texture_handle = self.ctx_ref.load_texture(
+                    "vidstream",
+                    first_frame,
+                    self.options.texture_options,
+                );
                 let texture_handle_clone = texture_handle.clone();
                 self.texture_handle = texture_handle;
                 Ok(texture_handle_clone)
