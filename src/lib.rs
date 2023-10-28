@@ -92,6 +92,7 @@ type AudioSampleProducer = RingbufProducer<f32>;
 type AudioSampleConsumer = RingbufConsumer<f32>;
 
 /// Configurable aspects of a [`Player`].
+#[derive(Clone, Debug)]
 pub struct PlayerOptions {
     /// Should the stream loop if it finishes?
     pub looping: bool,
@@ -217,7 +218,7 @@ pub struct SubtitleStreamer {
     subtitle_stream_indices: VecDeque<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Simple concurrecy of primitive values.
 pub struct Shared<T: Copy> {
     raw_value: Arc<Atomic<T>>,
