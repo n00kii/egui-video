@@ -25,13 +25,8 @@ impl eframe::App for App {
         CentralPanel::default().show(ctx, |ui| match self.player.as_mut() {
             None => {
                 println!("Starting stream");
-                self.player = Some(
-                    Player::new_udp(
-                        ctx,
-                        "127.0.0.1:1234",
-                    )
-                    .expect("Media not found."),
-                );
+                self.player =
+                    Some(Player::from_udp(ctx, "127.0.0.1:1234").expect("Media not found."));
             }
             Some(p) => {
                 frame.set_window_size(p.size);

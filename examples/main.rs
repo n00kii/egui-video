@@ -20,7 +20,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            audio_device: egui_video::init_audio_device_default().unwrap(),
+            audio_device: AudioDevice::new().unwrap(),
             media_path: String::new(),
             stream_size_scale: 1.,
             seek_frac: 0.,
@@ -115,7 +115,7 @@ impl eframe::App for App {
                                 .speed(0.05)
                                 .clamp_range(0.0..=1.0),
                         );
-                        ui.checkbox(&mut player.looping, "loop");
+                        ui.checkbox(&mut player.options.looping, "loop");
                     });
                     ui.horizontal(|ui| {
                         ui.label("size scale");
@@ -138,12 +138,12 @@ impl eframe::App for App {
                     });
                     ui.horizontal(|ui| {
                         ui.label("volume");
-                        let mut volume = player.audio_volume.get();
+                        let mut volume = player.options.audio_volume.get();
                         if ui
-                            .add(Slider::new(&mut volume, 0.0..=player.max_audio_volume))
+                            .add(Slider::new(&mut volume, 0.0..=player.options.max_audio_volume))
                             .changed()
                         {
-                            player.audio_volume.set(volume);
+                            player.options.audio_volume.set(volume);
                         };
                     });
                 });

@@ -1,7 +1,6 @@
 # egui-video, a video playing library for [`egui`](https://github.com/emilk/egui)
-
-[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video/0.5.2)
-[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/0.5.2/egui_video/)
+[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video/0.6.0)
+[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/0.6.0/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
 https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
@@ -19,7 +18,7 @@ Plays videos in egui from file path, bytes or socket (live stream).
 /* called once (top level initialization) */
 
 { // if using audio...
-    let audio_device = egui_video::init_audio_device_default()?;
+    let audio_device = egui_video::AudioDevice::new()?;
     
     // don't let audio_device drop out of memory! (or else you lose audio)
 
@@ -30,7 +29,7 @@ Plays videos in egui from file path, bytes or socket (live stream).
 ```rust
 /* called once (creating a player) */
 
-let mut player = Player::new(ctx, my_media_path)?;
+let mut player = egui_video::Player::new(ctx, my_media_path)?;
 
 { // if using audio...
     player = player.with_audio(&mut my_state.audio_device)
@@ -39,7 +38,7 @@ let mut player = Player::new(ctx, my_media_path)?;
 
 ```rust
 /* called every frame (showing the player) */
-player.ui(ui, [player.width as f32, player.height as f32]);
+player.ui(ui, player.size);
 ```
 
 ## Contributions
