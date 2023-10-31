@@ -31,11 +31,12 @@ use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
+use std::fmt;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
 use subtitle::Subtitle;
 use timer::{Guard, Timer};
-
 mod subtitle;
 
 #[cfg(feature = "from_bytes")]
@@ -81,7 +82,7 @@ enum PlayerMessage {
 }
 
 type PlayerMessageSender = std::sync::mpsc::Sender<PlayerMessage>;
-type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
+type PlayerMessageReceiver = std::sync::mpsc::Receiver<PlayerMessage>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
@@ -102,6 +103,8 @@ pub struct PlayerOptions {
     pub max_audio_volume: f32,
     /// The texture options for the displayed video frame.
     pub texture_options: TextureOptions,
+    /// UDP streaming options
+    pub udp_options: Option<UDPOptions>,
 }
 
 impl Default for PlayerOptions {
@@ -111,7 +114,112 @@ impl Default for PlayerOptions {
             max_audio_volume: 1.,
             audio_volume: Shared::new(0.5),
             texture_options: TextureOptions::default(),
+            udp_options: None,
         }
+    }
+}
+
+/// Configurable aspects of a udp streaming, see https://www.ffmpeg.org/ffmpeg-protocols.html#udp
+#[derive(Clone, Debug)]
+pub struct UDPOptions {
+    buffer_size: usize,
+    bitrate: usize,
+    burst_bits: Option<usize>,
+    localport: Option<u16>,
+    localaddr: Option<IpAddr>,
+    pkt_size: Option<usize>,
+    reuse: Option<bool>,
+    ttl: Option<usize>,
+    connect: Option<bool>,
+    sources: Option<Vec<IpAddr>>,
+    block: Option<Vec<IpAddr>>,
+    fifo_size: usize,
+    overrun_nonfatal: bool,
+    timeout: Duration,
+    broadcast: Option<bool>,
+}
+
+impl Default for UDPOptions {
+    fn default() -> Self {
+        Self {
+            buffer_size: 65535,
+            bitrate: 0,
+            burst_bits: None,
+            localport: None,
+            localaddr: None,
+            pkt_size: None,
+            reuse: None,
+            ttl: None,
+            connect: None,
+            sources: None,
+            block: None,
+            fifo_size: 1000 * 4096,
+            overrun_nonfatal: true,
+            timeout: Duration::microseconds(5000),
+            broadcast: None,
+        }
+    }
+}
+
+impl fmt::Display for UDPOptions {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "?buffer_size={}", self.buffer_size)?;
+        write!(fmt, "&bitrate={}", self.bitrate)?;
+        if let Some(burst_bits) = self.burst_bits {
+            write!(fmt, "&burst_bits={}", burst_bits)?;
+        };
+        if let Some(localport) = self.localport {
+            write!(fmt, "&local_port={}", localport)?;
+        };
+        if let Some(localaddr) = self.localaddr {
+            write!(fmt, "&localaddr={}", localaddr)?;
+        };
+        if let Some(pkt_size) = self.pkt_size {
+            write!(fmt, "&pkt_size={}", pkt_size)?;
+        };
+        if let Some(reuse) = self.reuse {
+            let reuse_i = if reuse { "1" } else { "0" };
+            write!(fmt, "&reuse={}", reuse_i)?;
+        };
+        if let Some(ttl) = self.ttl {
+            write!(fmt, "&ttl={}", ttl)?;
+        };
+        if let Some(connect) = self.connect {
+            let connect_i = if connect { "1" } else { "0" };
+            write!(fmt, "&reuse={}", connect_i)?;
+        };
+        if let Some(sources) = &self.sources {
+            let mut prepend = "&sources=";
+            for ip in sources {
+                write!(fmt, "{}{}", prepend, ip)?;
+                prepend = ",";
+            }
+        };
+        if let Some(block) = &self.block {
+            let mut prepend = "&block=";
+            for ip in block {
+                write!(fmt, "{}{}", prepend, ip)?;
+                prepend = ",";
+            }
+        };
+        write!(fmt, "&fifo_size={}", self.fifo_size)?;
+        if self.overrun_nonfatal {
+            write!(fmt, "&overrun_nonfatal=1")?
+        } else {
+            write!(fmt, "&overrun_nonfatal=0")?
+        };
+        write!(
+            fmt,
+            "&timeout={}",
+            self.timeout
+                .num_microseconds()
+                .expect("Microseconds overflow")
+        )?;
+        if let Some(broadcast) = self.broadcast {
+            let broadcast_i = if broadcast { "1" } else { "0" };
+            write!(fmt, "&reuse={}", broadcast_i)?;
+        };
+        Ok(())
     }
 }
 
@@ -141,7 +249,7 @@ pub struct Player {
     audio_stream_info: (usize, usize),
     subtitle_stream_info: (usize, usize),
     message_sender: PlayerMessageSender,
-    message_reciever: PlayerMessageReciever,
+    message_receiver: PlayerMessageReceiver,
     video_timer: Timer,
     audio_timer: Timer,
     subtitle_timer: Timer,
@@ -219,7 +327,7 @@ pub struct SubtitleStreamer {
 }
 
 #[derive(Clone, Debug)]
-/// Simple concurrecy of primitive values.
+/// Simple concurrency of primitive values.
 pub struct Shared<T: Copy> {
     raw_value: Arc<Atomic<T>>,
 }
@@ -299,7 +407,7 @@ impl Player {
     pub fn stop(&mut self) {
         self.set_state(PlayerState::Stopped)
     }
-    /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
+    /// Directly stop the stream. Use if you need to immediately end the streams, and/or you
     /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
     pub fn stop_direct(&mut self) {
         self.video_thread = None;
@@ -358,10 +466,8 @@ impl Player {
         fn play<T: Streamer>(streamer: &Weak<Mutex<T>>) {
             if let Some(streamer) = streamer.upgrade() {
                 if let Some(mut streamer) = streamer.try_lock() {
-                    if (streamer.player_state().get() == PlayerState::Playing)
-                        && streamer.primary_elapsed_ms().get() >= streamer.elapsed_ms().get()
-                    {
-                        match streamer.recieve_next_packet_until_frame() {
+                    if streamer.player_state().get() == PlayerState::Playing {
+                        match streamer.receive_next_packet_until_frame() {
                             Ok(frame) => streamer.apply_frame(frame),
                             Err(e) => {
                                 if is_ffmpeg_eof_error(&e) && streamer.is_primary_streamer() {
@@ -444,8 +550,8 @@ impl Player {
                 if self.last_seek_ms.is_some() {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
                     if !seek_in_progress {
-                        if let Some(previeous_player_state) = self.preseek_player_state {
-                            self.set_state(previeous_player_state)
+                        if let Some(previous_player_state) = self.preseek_player_state {
+                            self.set_state(previous_player_state)
                         }
                         self.video_elapsed_ms_override = None;
                         self.last_seek_ms = None;
@@ -459,7 +565,7 @@ impl Player {
             PlayerState::Restarting => reset_stream = true,
             _ => (),
         }
-        if let Ok(message) = self.message_reciever.try_recv() {
+        if let Ok(message) = self.message_receiver.try_recv() {
             fn increment_stream_info(stream_info: &mut (usize, usize)) {
                 stream_info.0 = ((stream_info.0 + 1) % (stream_info.1 + 1)).max(1);
             }
@@ -1088,7 +1194,7 @@ impl Player {
         let options = PlayerOptions::default();
         let texture_handle =
             ctx.load_texture("vidstream", ColorImage::example(), options.texture_options);
-        let (message_sender, message_reciever) = std::sync::mpsc::channel();
+        let (message_sender, message_receiver) = std::sync::mpsc::channel();
         let mut streamer = Self {
             input_path: input_path.clone(),
             audio_streamer: None,
@@ -1108,7 +1214,7 @@ impl Player {
             texture_handle,
             player_state,
             message_sender,
-            message_reciever,
+            message_receiver,
             video_elapsed_ms,
             audio_elapsed_ms,
             size,
@@ -1132,8 +1238,35 @@ impl Player {
         Ok(streamer)
     }
 
+    /// Create new [`Player`] streaming from UDP socket
+    pub fn from_udp<T: ToSocketAddrs>(ctx: &egui::Context, socket: T, options: UDPOptions) -> Result<Self> {
+
+        let input_path = format!(
+            "udp://{}{}",
+            socket
+                .to_socket_addrs()?
+                .next()
+                .ok_or(ffmpeg::Error::StreamNotFound)?,
+            options
+        );
+        let mut player = Self::new(ctx, &input_path)?;
+        player.options.udp_options = Some(options);
+
+        // Duration is not relevant for streaming
+        player.duration_ms = 0;
+
+        // Framerate is "how often do we check for new frames".
+        // Higher framerate than stream allows closer to "live" stream
+        player.framerate = 500.;
+
+        // Start stream
+        player.start();
+
+        Ok(player)
+    }
+
     fn try_set_texture_handle(&mut self) -> Result<TextureHandle> {
-        match self.video_streamer.lock().recieve_next_packet_until_frame() {
+        match self.video_streamer.lock().receive_next_packet_until_frame() {
             Ok(first_frame) => {
                 let texture_handle = self.ctx_ref.load_texture(
                     "vidstream",
@@ -1188,7 +1321,16 @@ pub trait Streamer: Send {
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
 
             if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
-                // dbg!(e); TODO: propogate error
+                // dbg!(e); TODO: propagate error
+            } else if seek_frac < 0.03 {
+                // prevent seek inaccuracy errors near start of stream
+                self.player_state().set(PlayerState::Restarting);
+                return;
+            } else if seek_frac >= 1.0 {
+                // disable this safeguard for now (fixed?)
+                // prevent infinite loop near end of stream
+                self.player_state().set(PlayerState::EndOfFile);
+                return;
             } else {
                 self.decoder().flush();
                 let mut previous_elapsed_ms = self.elapsed_ms().get();
@@ -1220,7 +1362,7 @@ pub trait Streamer: Send {
 
                 // frame preview
                 if self.is_primary_streamer() {
-                    match self.recieve_next_packet_until_frame() {
+                    match self.receive_next_packet_until_frame() {
                         Ok(frame) => self.apply_frame(frame),
                         _ => (),
                     }
@@ -1256,13 +1398,13 @@ pub trait Streamer: Send {
     /// Ignore the remainder of this packet.
     fn drop_frames(&mut self) -> Result<()> {
         if self.decode_frame().is_err() {
-            self.recieve_next_packet()
+            self.receive_next_packet()
         } else {
             self.drop_frames()
         }
     }
-    /// Recieve the next packet of the stream.
-    fn recieve_next_packet(&mut self) -> Result<()> {
+    /// Receive the next packet of the stream.
+    fn receive_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
@@ -1283,17 +1425,16 @@ pub trait Streamer: Send {
         let _ = self.input_context().seek(beginning_seek, ..beginning_seek);
         self.decoder().flush();
     }
-    /// Keep recieving packets until a frame can be decoded.
-    fn recieve_next_packet_until_frame(&mut self) -> Result<Self::ProcessedFrame> {
-        match self.recieve_next_frame() {
+    /// Keep receiving packets until a frame can be decoded.
+    fn receive_next_packet_until_frame(&mut self) -> Result<Self::ProcessedFrame> {
+        match self.receive_next_frame() {
             Ok(frame_result) => Ok(frame_result),
             Err(e) => {
-                // dbg!(&e, is_ffmpeg_incomplete_error(&e));
-                if is_ffmpeg_incomplete_error(&e) {
-                    self.recieve_next_packet()?;
-                    self.recieve_next_packet_until_frame()
-                } else {
+                if is_ffmpeg_eof_error(&e) {
                     Err(e)
+                } else {
+                    self.receive_next_packet()?;
+                    self.receive_next_packet_until_frame()
                 }
             }
         }
@@ -1303,7 +1444,7 @@ pub trait Streamer: Send {
     /// Apply a processed frame
     fn apply_frame(&mut self, _frame: Self::ProcessedFrame) {}
     /// Decode and process a frame.
-    fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
+    fn receive_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
             Err(e) => {
@@ -1491,7 +1632,7 @@ impl Streamer for SubtitleStreamer {
     fn player_state(&self) -> &Shared<PlayerState> {
         &self.player_state
     }
-    fn recieve_next_packet(&mut self) -> Result<()> {
+    fn receive_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
