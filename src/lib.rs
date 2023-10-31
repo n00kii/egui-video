@@ -31,7 +31,8 @@ use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
-use std::net::ToSocketAddrs;
+use std::fmt;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
 use subtitle::Subtitle;
@@ -102,6 +103,8 @@ pub struct PlayerOptions {
     pub max_audio_volume: f32,
     /// The texture options for the displayed video frame.
     pub texture_options: TextureOptions,
+    /// UDP streaming options
+    pub udp_options: Option<UDPOptions>,
 }
 
 impl Default for PlayerOptions {
@@ -111,7 +114,112 @@ impl Default for PlayerOptions {
             max_audio_volume: 1.,
             audio_volume: Shared::new(0.5),
             texture_options: TextureOptions::default(),
+            udp_options: None,
         }
+    }
+}
+
+/// Configurable aspects of a udp streaming, see https://www.ffmpeg.org/ffmpeg-protocols.html#udp
+#[derive(Clone, Debug)]
+pub struct UDPOptions {
+    buffer_size: usize,
+    bitrate: usize,
+    burst_bits: Option<usize>,
+    localport: Option<u16>,
+    localaddr: Option<IpAddr>,
+    pkt_size: Option<usize>,
+    reuse: Option<bool>,
+    ttl: Option<usize>,
+    connect: Option<bool>,
+    sources: Option<Vec<IpAddr>>,
+    block: Option<Vec<IpAddr>>,
+    fifo_size: usize,
+    overrun_nonfatal: bool,
+    timeout: Duration,
+    broadcast: Option<bool>,
+}
+
+impl Default for UDPOptions {
+    fn default() -> Self {
+        Self {
+            buffer_size: 65535,
+            bitrate: 0,
+            burst_bits: None,
+            localport: None,
+            localaddr: None,
+            pkt_size: None,
+            reuse: None,
+            ttl: None,
+            connect: None,
+            sources: None,
+            block: None,
+            fifo_size: 1000 * 4096,
+            overrun_nonfatal: true,
+            timeout: Duration::microseconds(5000),
+            broadcast: None,
+        }
+    }
+}
+
+impl fmt::Display for UDPOptions {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "?buffer_size={}", self.buffer_size)?;
+        write!(fmt, "&bitrate={}", self.bitrate)?;
+        if let Some(burst_bits) = self.burst_bits {
+            write!(fmt, "&burst_bits={}", burst_bits)?;
+        };
+        if let Some(localport) = self.localport {
+            write!(fmt, "&local_port={}", localport)?;
+        };
+        if let Some(localaddr) = self.localaddr {
+            write!(fmt, "&localaddr={}", localaddr)?;
+        };
+        if let Some(pkt_size) = self.pkt_size {
+            write!(fmt, "&pkt_size={}", pkt_size)?;
+        };
+        if let Some(reuse) = self.reuse {
+            let reuse_i = if reuse { "1" } else { "0" };
+            write!(fmt, "&reuse={}", reuse_i)?;
+        };
+        if let Some(ttl) = self.ttl {
+            write!(fmt, "&ttl={}", ttl)?;
+        };
+        if let Some(connect) = self.connect {
+            let connect_i = if connect { "1" } else { "0" };
+            write!(fmt, "&reuse={}", connect_i)?;
+        };
+        if let Some(sources) = &self.sources {
+            let mut prepend = "&sources=";
+            for ip in sources {
+                write!(fmt, "{}{}", prepend, ip)?;
+                prepend = ",";
+            }
+        };
+        if let Some(block) = &self.block {
+            let mut prepend = "&block=";
+            for ip in block {
+                write!(fmt, "{}{}", prepend, ip)?;
+                prepend = ",";
+            }
+        };
+        write!(fmt, "&fifo_size={}", self.fifo_size)?;
+        if self.overrun_nonfatal {
+            write!(fmt, "&overrun_nonfatal=1")?
+        } else {
+            write!(fmt, "&overrun_nonfatal=0")?
+        };
+        write!(
+            fmt,
+            "&timeout={}",
+            self.timeout
+                .num_microseconds()
+                .expect("Microseconds overflow")
+        )?;
+        if let Some(broadcast) = self.broadcast {
+            let broadcast_i = if broadcast { "1" } else { "0" };
+            write!(fmt, "&reuse={}", broadcast_i)?;
+        };
+        Ok(())
     }
 }
 
@@ -743,10 +851,10 @@ impl Player {
             }
         }
 
-        let is_subtitle_cycleable = self.subtitle_stream_info.1 > 1;
-        let is_audio_cycleable = self.audio_stream_info.1 > 1;
+        let is_subtitle_cyclable = self.subtitle_stream_info.1 > 1;
+        let is_audio_cyclable = self.audio_stream_info.1 > 1;
 
-        if is_audio_cycleable || is_subtitle_cycleable {
+        if is_audio_cyclable || is_subtitle_cyclable {
             let stream_icon_rect = ui.painter().text(
                 stream_icon_pos,
                 Align2::RIGHT_BOTTOM,
@@ -822,10 +930,10 @@ impl Player {
             };
 
             if stream_anim_frac > 0. {
-                if is_audio_cycleable {
+                if is_audio_cyclable {
                     draw_row(Type::Audio);
                 }
-                if is_subtitle_cycleable {
+                if is_subtitle_cyclable {
                     draw_row(Type::Subtitle);
                 }
             }
@@ -1130,16 +1238,19 @@ impl Player {
         Ok(streamer)
     }
 
-    /// Create new [`Player`] streaming from socket UDP
-    pub fn from_udp<T: ToSocketAddrs>(ctx: &egui::Context, socket: T) -> Result<Self> {
+    /// Create new [`Player`] streaming from UDP socket
+    pub fn from_udp<T: ToSocketAddrs>(ctx: &egui::Context, socket: T, options: UDPOptions) -> Result<Self> {
+
         let input_path = format!(
-            "udp://{}?pkt_size=188&buffer_size=65535&overrun_nonfatal=1&fifo_size=100000000",
+            "udp://{}{}",
             socket
                 .to_socket_addrs()?
                 .next()
-                .ok_or(ffmpeg::Error::StreamNotFound)?
+                .ok_or(ffmpeg::Error::StreamNotFound)?,
+            options
         );
         let mut player = Self::new(ctx, &input_path)?;
+        player.options.udp_options = Some(options);
 
         // Duration is not relevant for streaming
         player.duration_ms = 0;

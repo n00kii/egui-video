@@ -1,6 +1,6 @@
 use eframe::NativeOptions;
 use egui::CentralPanel;
-use egui_video::Player;
+use egui_video::{Player, UDPOptions};
 
 fn main() {
     let _ = eframe::run_native(
@@ -26,7 +26,7 @@ impl eframe::App for App {
             None => {
                 println!("Starting stream");
                 self.player =
-                    Some(Player::from_udp(ctx, "127.0.0.1:1234").expect("Media not found."));
+                    Some(Player::from_udp(ctx, "127.0.0.1:1234",UDPOptions::default()).expect("Media not found."));
             }
             Some(p) => {
                 frame.set_window_size(p.size);
