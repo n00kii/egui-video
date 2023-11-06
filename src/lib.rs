@@ -115,6 +115,22 @@ impl Default for PlayerOptions {
     }
 }
 
+impl PlayerOptions {
+    /// Set the maxmimum player volume, and scale the actual player volume to the 
+    /// same current ratio.
+    pub fn set_max_audio_volume(&mut self, volume: f32) {
+        self.audio_volume
+            .set(self.audio_volume.get() * (volume / self.max_audio_volume));
+        self.max_audio_volume = volume;
+    }
+
+    /// Set the player volume, clamped in `0.0..=max_audio_volume`.
+    pub fn set_audio_volume(&mut self, volume: f32) {
+        self.audio_volume
+            .set(volume.clamp(0., self.max_audio_volume));
+    }
+}
+
 /// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file.
 /// Initialize once, and use the [`Player::ui`] or [`Player::ui_at()`] functions to show the playback.
 pub struct Player {
