@@ -9,6 +9,7 @@ extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use chrono::{DateTime, Duration, Utc};
+use crossbeam_channel::{Receiver, Sender};
 use egui::emath::RectTransform;
 use egui::epaint::Shadow;
 use egui::load::SizedTexture;
@@ -116,7 +117,7 @@ impl Default for PlayerOptions {
 }
 
 impl PlayerOptions {
-    /// Set the maxmimum player volume, and scale the actual player volume to the 
+    /// Set the maxmimum player volume, and scale the actual player volume to the
     /// same current ratio.
     pub fn set_max_audio_volume(&mut self, volume: f32) {
         self.audio_volume
@@ -198,7 +199,7 @@ pub enum PlayerState {
 /// Streams video.
 pub struct VideoStreamer {
     video_decoder: ffmpeg::decoder::Video,
-    video_stream_index: usize,
+    video_stream_index: StreamIndex,
     player_state: Shared<PlayerState>,
     duration_ms: i64,
     input_context: Input,
@@ -217,7 +218,7 @@ pub struct AudioStreamer {
     audio_sample_producer: AudioSampleProducer,
     input_context: Input,
     player_state: Shared<PlayerState>,
-    audio_stream_indices: VecDeque<usize>,
+    audio_stream_indices: VecDeque<StreamIndex>,
 }
 
 /// Streams subtitles.
@@ -231,7 +232,7 @@ pub struct SubtitleStreamer {
     subtitles_queue: SubtitleQueue,
     input_context: Input,
     player_state: Shared<PlayerState>,
-    subtitle_stream_indices: VecDeque<usize>,
+    subtitle_stream_indices: VecDeque<StreamIndex>,
 }
 
 #[derive(Clone, Debug)]
@@ -313,11 +314,7 @@ impl Player {
     }
     /// Stop the stream.
     pub fn stop(&mut self) {
-        self.set_state(PlayerState::Stopped)
-    }
-    /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
-    /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
-    pub fn stop_direct(&mut self) {
+        self.set_state(PlayerState::Stopped);
         self.video_thread = None;
         self.audio_thread = None;
         self.reset()
@@ -421,7 +418,7 @@ impl Player {
     }
     /// Start the stream.
     pub fn start(&mut self) {
-        self.stop_direct();
+        self.stop();
         self.spawn_timers();
         self.resume();
     }
@@ -439,9 +436,6 @@ impl Player {
                 } else {
                     self.player_state.set(PlayerState::Stopped);
                 }
-            }
-            PlayerState::Stopped => {
-                self.stop_direct();
             }
             PlayerState::Playing => {
                 for subtitle in self.current_subtitles.iter_mut() {
@@ -981,7 +975,7 @@ impl Player {
 
             audio_device.0.resume();
 
-            self.stop_direct();
+            self.stop();
             self.audio_stream_info = (1, audio_stream_indices.len()); // first stream, out of all the other streams
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
@@ -1013,7 +1007,7 @@ impl Player {
                 get_decoder_from_stream_index(&subtitle_input_context, subtitle_stream_indices[0])?
                     .subtitle()?;
 
-            self.stop_direct();
+            self.stop();
             self.subtitle_stream_info = (1, subtitle_stream_indices.len()); // first stream, out of all the other streams
             Some(SubtitleStreamer {
                 next_packet: None,
@@ -1075,7 +1069,7 @@ impl Player {
             .streams()
             .best(Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
-        let video_stream_index = video_stream.index();
+        let video_stream_index = StreamIndex::from(video_stream.index());
 
         let video_elapsed_ms = Shared::new(0);
         let audio_elapsed_ms = Shared::new(0);
@@ -1168,23 +1162,53 @@ impl Player {
 fn get_stream_indices_of_type(
     input_context: &Input,
     stream_type: ffmpeg::media::Type,
-) -> VecDeque<usize> {
+) -> VecDeque<StreamIndex> {
     input_context
         .streams()
-        .filter_map(|s| (s.parameters().medium() == stream_type).then_some(s.index()))
+        .filter_map(|s| {
+            (s.parameters().medium() == stream_type).then_some(StreamIndex::from(s.index()))
+        })
         .collect::<VecDeque<_>>()
 }
 
 fn get_decoder_from_stream_index(
     input_context: &Input,
-    stream_index: usize,
+    stream_index: StreamIndex,
 ) -> Result<ffmpeg::decoder::Decoder> {
     let context = ffmpeg::codec::context::Context::from_parameters(
-        input_context.stream(stream_index).unwrap().parameters(),
+        input_context.stream(stream_index.0).unwrap().parameters(),
     )?;
     Ok(context.decoder())
 }
+struct PacketQueue {
+    sender: Sender<Packet>,
+    reciever: Receiver<Packet>,
+    queue: VecDeque<Packet>,
+}
 
+struct InputManager {
+    input_context: Input,
+    packet_senders: Vec<(StreamIndex, Sender<Packet>)>,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub struct StreamIndex(usize);
+
+impl From<usize> for StreamIndex {
+    fn from(value: usize) -> Self {
+        StreamIndex(value)
+    }
+}
+
+
+impl InputManager {
+    fn register_stream(&mut self, stream_index: StreamIndex, packet_sender: Sender<Packet>) {
+        self.packet_senders.push((stream_index, packet_sender))
+    }
+    fn play(&mut self) {
+        
+    }
+}
 /// Streams data.
 pub trait Streamer: Send {
     /// The associated type of frame used for the stream.
@@ -1252,9 +1276,9 @@ pub trait Streamer: Send {
     /// The primary streamer will control most of the state/syncing.
     fn is_primary_streamer(&self) -> bool;
     /// The stream index.
-    fn stream_index(&self) -> usize;
+    fn stream_index(&self) -> StreamIndex;
     /// Move to the next stream index, if possible, and return the new_stream_index.
-    fn cycle_stream(&mut self) -> usize;
+    fn cycle_stream(&mut self) -> StreamIndex;
     /// The elapsed time of this streamer, in milliseconds.
     fn elapsed_ms(&self) -> &Shared<i64>;
     /// The elapsed time of the primary streamer, in milliseconds.
@@ -1281,7 +1305,7 @@ pub trait Streamer: Send {
     fn recieve_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
-            if stream.index() == self.stream_index() {
+            if stream.index() == self.stream_index().0 {
                 self.decoder().send_packet(&packet)?;
                 if let Some(dts) = packet.dts() {
                     self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
@@ -1338,11 +1362,11 @@ impl Streamer for VideoStreamer {
     fn is_primary_streamer(&self) -> bool {
         true
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.video_stream_index
     }
-    fn cycle_stream(&mut self) -> usize {
-        0
+    fn cycle_stream(&mut self) -> StreamIndex {
+        StreamIndex::from(0)
     }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.video_decoder.0
@@ -1399,10 +1423,10 @@ impl Streamer for AudioStreamer {
     fn is_primary_streamer(&self) -> bool {
         false
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.audio_stream_indices[0]
     }
-    fn cycle_stream(&mut self) -> usize {
+    fn cycle_stream(&mut self) -> StreamIndex {
         self.audio_stream_indices.rotate_right(1);
         let new_stream_index = self.stream_index();
         let new_decoder = get_decoder_from_stream_index(&self.input_context, new_stream_index)
@@ -1470,10 +1494,10 @@ impl Streamer for SubtitleStreamer {
     fn is_primary_streamer(&self) -> bool {
         false
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.subtitle_stream_indices[0]
     }
-    fn cycle_stream(&mut self) -> usize {
+    fn cycle_stream(&mut self) -> StreamIndex {
         self.subtitle_stream_indices.rotate_right(1);
         self.subtitle_decoder.flush();
         let new_stream_index = self.stream_index();
@@ -1510,7 +1534,7 @@ impl Streamer for SubtitleStreamer {
     fn recieve_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
-            if stream.index() == self.stream_index() {
+            if stream.index() == self.stream_index().0 {
                 if let Some(dts) = packet.dts() {
                     self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
                 }
