@@ -144,7 +144,7 @@ pub struct Player {
     /// a valid subtitle stream in the file.
     pub subtitle_streamer: Option<Arc<Mutex<SubtitleStreamer>>>,
     /// The state of the player.
-    pub player_state: Shared<PlayerState>,
+    pub state: Shared<PlayerState>,
     /// The player's texture handle.
     pub texture_handle: TextureHandle,
     /// The size of the video stream.
@@ -198,6 +198,7 @@ pub enum PlayerState {
 
 /// Streams video.
 pub struct VideoStreamer {
+    packet_queue: PacketQueue,
     video_decoder: ffmpeg::decoder::Video,
     video_stream_index: StreamIndex,
     player_state: Shared<PlayerState>,
@@ -302,7 +303,7 @@ impl Player {
             .unwrap_or(self.video_elapsed_ms.get())
     }
     fn set_state(&mut self, new_state: PlayerState) {
-        self.player_state.set(new_state)
+        self.state.set(new_state)
     }
     /// Pause the stream.
     pub fn pause(&mut self) {
@@ -324,7 +325,7 @@ impl Player {
     }
     /// Seek to a location in the stream.
     pub fn seek(&mut self, seek_frac: f32) {
-        let current_state = self.player_state.get();
+        let current_state = self.state.get();
         if !matches!(current_state, PlayerState::Seeking(true)) {
             match current_state {
                 PlayerState::Stopped | PlayerState::EndOfFile => {
@@ -429,12 +430,12 @@ impl Player {
     pub fn process_state(&mut self) {
         let mut reset_stream = false;
 
-        match self.player_state.get() {
+        match self.state.get() {
             PlayerState::EndOfFile => {
                 if self.options.looping {
                     reset_stream = true;
                 } else {
-                    self.player_state.set(PlayerState::Stopped);
+                    self.state.set(PlayerState::Stopped);
                 }
             }
             PlayerState::Playing => {
@@ -557,9 +558,9 @@ impl Player {
     /// [`Player::ui`] or [`Player::ui_at`].
     pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
         let hovered = ui.rect_contains_pointer(frame_response.rect);
-        let currently_seeking = matches!(self.player_state.get(), PlayerState::Seeking(_));
-        let is_stopped = matches!(self.player_state.get(), PlayerState::Stopped);
-        let is_paused = matches!(self.player_state.get(), PlayerState::Paused);
+        let currently_seeking = matches!(self.state.get(), PlayerState::Seeking(_));
+        let is_stopped = matches!(self.state.get(), PlayerState::Stopped);
+        let is_paused = matches!(self.state.get(), PlayerState::Paused);
         let animation_time = 0.2;
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
             frame_response.id.with("seekbar_anim"),
@@ -739,11 +740,11 @@ impl Player {
             let mut reset_stream = false;
             let mut start_stream = false;
 
-            match self.player_state.get() {
+            match self.state.get() {
                 PlayerState::Stopped => start_stream = true,
                 PlayerState::EndOfFile => reset_stream = true,
-                PlayerState::Paused => self.player_state.set(PlayerState::Playing),
-                PlayerState::Playing => self.player_state.set(PlayerState::Paused),
+                PlayerState::Paused => self.state.set(PlayerState::Playing),
+                PlayerState::Playing => self.state.set(PlayerState::Paused),
                 _ => (),
             }
 
@@ -979,7 +980,7 @@ impl Player {
             self.audio_stream_info = (1, audio_stream_indices.len()); // first stream, out of all the other streams
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
-                player_state: self.player_state.clone(),
+                player_state: self.state.clone(),
                 video_elapsed_ms: self.video_elapsed_ms.clone(),
                 audio_elapsed_ms: self.audio_elapsed_ms.clone(),
                 audio_sample_producer,
@@ -1012,7 +1013,7 @@ impl Player {
             Some(SubtitleStreamer {
                 next_packet: None,
                 duration_ms: self.duration_ms,
-                player_state: self.player_state.clone(),
+                player_state: self.state.clone(),
                 video_elapsed_ms: self.video_elapsed_ms.clone(),
                 _audio_elapsed_ms: self.audio_elapsed_ms.clone(),
                 subtitle_elapsed_ms: self.subtitle_elapsed_ms.clone(),
@@ -1086,6 +1087,7 @@ impl Player {
         let duration_ms = timestamp_to_millisec(input_context.duration(), AV_TIME_BASE_RATIONAL); // in sec
 
         let stream_decoder = VideoStreamer {
+            packet_queue: PacketQueue::new(),
             apply_video_frame_fn: None,
             duration_ms,
             video_decoder,
@@ -1116,7 +1118,7 @@ impl Player {
             subtitle_thread: None,
             audio_thread: None,
             texture_handle,
-            player_state,
+            state: player_state,
             message_sender,
             message_reciever,
             video_elapsed_ms,
@@ -1182,15 +1184,24 @@ fn get_decoder_from_stream_index(
 }
 struct PacketQueue {
     sender: Sender<Packet>,
-    reciever: Receiver<Packet>,
+    receiver: Receiver<Packet>,
     queue: VecDeque<Packet>,
 }
 
+// cont read input -> send packet to streamers, till pkt qs reach min
 struct InputManager {
     input_context: Input,
+    player_state: Shared<PlayerState>,
     packet_senders: Vec<(StreamIndex, Sender<Packet>)>,
 }
 
+// cont read pkt qs -> decode frames, till frame qs reach min
+struct StreamManager {
+    // streams: Vec<>
+}
+
+
+/// The index of a stream within an `ffmpeg::format::context::Input` packet stream.
 #[derive(PartialEq, Clone, Copy)]
 pub struct StreamIndex(usize);
 
@@ -1200,13 +1211,50 @@ impl From<usize> for StreamIndex {
     }
 }
 
+impl PacketQueue {
+    fn new() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self {
+            sender,
+            receiver,
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+const MINIMUM_PACKET_QUEUE_TARGET: usize = 5;
 
 impl InputManager {
+    fn are_senders_hungry(&self) -> bool {
+        self.packet_senders
+            .iter()
+            .any(|(_, s)| s.len() < MINIMUM_PACKET_QUEUE_TARGET)
+    }
     fn register_stream(&mut self, stream_index: StreamIndex, packet_sender: Sender<Packet>) {
         self.packet_senders.push((stream_index, packet_sender))
     }
-    fn play(&mut self) {
-        
+    fn start(&mut self) {
+        // loop until queues have reached min or eof
+        'outer: loop {
+            match self.player_state.get() {
+                PlayerState::Playing => {
+                    if !self.are_senders_hungry() {
+                        continue 'outer;
+                    }
+                    if let Some((stream, packet)) = self.input_context.packets().next() {
+                        for (registered_stream_index, packet_sender) in self.packet_senders.iter() {
+                            if stream.index() == registered_stream_index.0 {
+                                packet_sender.send(packet).unwrap();
+                                continue 'outer;
+                            }
+                        }
+                    } else {
+                        break 'outer;
+                    }
+                }
+                _ => (),
+            }
+        }
     }
 }
 /// Streams data.

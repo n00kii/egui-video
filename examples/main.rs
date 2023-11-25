@@ -93,7 +93,7 @@ impl eframe::App for App {
                         ui.end_row();
 
                         ui.label("state");
-                        ui.label(format!("{:?}", player.player_state.get()));
+                        ui.label(format!("{:?}", player.state.get()));
                         ui.end_row();
 
                         ui.label("has audio?");
