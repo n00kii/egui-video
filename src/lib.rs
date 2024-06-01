@@ -604,10 +604,12 @@ impl Player {
         );
 
         if currently_seeking {
-            let mut seek_indicator_shadow = Shadow::big_dark();
-            seek_indicator_shadow.color = seek_indicator_shadow
-                .color
-                .linear_multiply(seek_indicator_anim);
+            let seek_indicator_shadow = Shadow {
+                offset: vec2(10.0, 20.0),
+                blur: 15.0,
+                spread: 0.0,
+                color: Color32::from_black_alpha(96).linear_multiply(seek_indicator_anim),
+            };
             let spinner_size = 20. * seek_indicator_anim;
             ui.painter()
                 .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::ZERO));
@@ -682,8 +684,12 @@ impl Player {
         let mut duration_text_font_id = FontId::default();
         duration_text_font_id.size = 14.;
 
-        let mut shadow = Shadow::big_light();
-        shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
+        let shadow = Shadow {
+            offset: vec2(10.0, 20.0),
+            blur: 15.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(25).linear_multiply(seekbar_anim_frac),
+        };
 
         let mut shadow_rect = frame_response.rect;
         shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
