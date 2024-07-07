@@ -951,9 +951,9 @@ impl Player {
             let audio_sample_buffer =
                 SharedRb::<f32, Vec<_>>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
-            let audio_resampler = ffmpeg::software::resampling::context::Context::get(
+            let audio_resampler = ffmpeg::software::resampling::context::Context::get2(
                 audio_decoder.format(),
-                audio_decoder.channel_layout(),
+                audio_decoder.ch_layout(),
                 audio_decoder.rate(),
                 audio_device.0.spec().format.to_sample(),
                 ChannelLayout::STEREO,
@@ -1269,7 +1269,7 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(Ok((stream, packet))) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1399,9 +1399,9 @@ impl Streamer for AudioStreamer {
             .unwrap()
             .audio()
             .unwrap();
-        let new_resampler = ffmpeg::software::resampling::context::Context::get(
+        let new_resampler = ffmpeg::software::resampling::context::Context::get2(
             new_decoder.format(),
-            new_decoder.channel_layout(),
+            new_decoder.ch_layout(),
             new_decoder.rate(),
             self.resampler.output().format,
             ChannelLayout::STEREO,
@@ -1498,7 +1498,7 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(Ok((stream, packet))) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 if let Some(dts) = packet.dts() {
@@ -1595,14 +1595,17 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
         panic!("data is not packed");
     }
 
-    if !<T as ffmpeg::frame::audio::Sample>::is_valid(frame.format(), frame.channels()) {
+    if !<T as ffmpeg::frame::audio::Sample>::is_valid(
+        frame.format(),
+        frame.ch_layout().channels() as u16,
+    ) {
         panic!("unsupported type");
     }
 
     unsafe {
         std::slice::from_raw_parts(
             (*frame.as_ptr()).data[0] as *const T,
-            frame.samples() * frame.channels() as usize,
+            frame.samples() * frame.ch_layout().channels() as usize,
         )
     }
 }

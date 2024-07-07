@@ -20,7 +20,7 @@ sdl2-bundled = ["sdl2/bundled"]
 [dependencies]
 egui = "0.27.0"
 atomic = "0.5.3"
-ffmpeg-the-third = "1.2.2"
+ffmpeg-the-third = "2.0.1"
 anyhow = "1.0.75"
 timer = "0.2.0"
 chrono = "0.4.31"
