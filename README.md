@@ -8,7 +8,7 @@ https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda
 plays videos in egui from file path or from bytes
 
 ## dependancies:
- - requires ffmpeg 6. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
+ - requires ffmpeg 6 or 7. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
  - requires sdl2. by default, a feature is enabled to automatically compile it for you, but you are free to disable it and follow [these instructions](https://github.com/Rust-SDL2/rust-sdl2#requirements)
 ## usage:
 ```rust
