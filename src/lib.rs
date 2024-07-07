@@ -1269,7 +1269,8 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(Ok((stream, packet))) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1498,7 +1499,8 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(Ok((stream, packet))) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == self.stream_index() {
                 if let Some(dts) = packet.dts() {
