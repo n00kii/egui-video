@@ -1,6 +1,6 @@
 [package]
 name = "egui-video"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "a video library for egui"
@@ -18,7 +18,7 @@ from_bytes = ["dep:tempfile"]
 sdl2-bundled = ["sdl2/bundled"]
 
 [dependencies]
-egui = "0.28.0"
+egui = "0.28"
 atomic = "0.5.3"
 ffmpeg-the-third = "2.0.1"
 anyhow = "1.0.75"
