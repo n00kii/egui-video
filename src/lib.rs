@@ -576,7 +576,6 @@ impl Player {
         let mut seekbar_rect =
             Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
         let seekbar_interact_rect = fullseekbar_rect.expand(10.);
-        ui.interact(seekbar_interact_rect, frame_response.id, Sense::drag());
 
         let seekbar_response = ui.interact(
             seekbar_interact_rect,
