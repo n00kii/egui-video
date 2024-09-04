@@ -8,6 +8,7 @@
 extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
+use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Duration, Utc};
 use egui::emath::RectTransform;
 use egui::epaint::Shadow;
@@ -28,7 +29,9 @@ use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
-use ringbuf::SharedRb;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::wrap::caching::Caching;
+use ringbuf::HeapRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
@@ -85,8 +88,8 @@ type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
-type RingbufProducer<T> = ringbuf::Producer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
-type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
+type RingbufProducer<T> = Caching<Arc<HeapRb<T>>, true, false>;
+type RingbufConsumer<T> = Caching<Arc<HeapRb<T>>, false, true>;
 
 type AudioSampleProducer = RingbufProducer<f32>;
 type AudioSampleConsumer = RingbufConsumer<f32>;
@@ -162,8 +165,9 @@ pub struct Player {
     input_path: String,
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
 /// The possible states of a [`Player`].
+#[repr(C)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PlayerState {
     /// No playback.
     Stopped,
@@ -178,6 +182,9 @@ pub enum PlayerState {
     /// Playback is scheduled to restart.
     Restarting,
 }
+
+unsafe impl Zeroable for PlayerState {}
+unsafe impl Pod for PlayerState {}
 
 /// Streams video.
 pub struct VideoStreamer {
@@ -220,11 +227,11 @@ pub struct SubtitleStreamer {
 
 #[derive(Clone, Debug)]
 /// Simple concurrecy of primitive values.
-pub struct Shared<T: Copy> {
+pub struct Shared<T: Copy + bytemuck::Pod> {
     raw_value: Arc<Atomic<T>>,
 }
 
-impl<T: Copy> Shared<T> {
+impl<T: Copy + bytemuck::Pod> Shared<T> {
     /// Set the value.
     pub fn set(&self, value: T) {
         self.raw_value.store(value, atomic::Ordering::Relaxed)
@@ -547,9 +554,10 @@ impl Player {
     /// [`Player::ui`] or [`Player::ui_at`].
     pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
         let hovered = ui.rect_contains_pointer(frame_response.rect);
-        let currently_seeking = matches!(self.player_state.get(), PlayerState::Seeking(_));
-        let is_stopped = matches!(self.player_state.get(), PlayerState::Stopped);
-        let is_paused = matches!(self.player_state.get(), PlayerState::Paused);
+        let player_state = self.player_state.get();
+        let currently_seeking = matches!(player_state, PlayerState::Seeking(_));
+        let is_stopped = matches!(player_state, PlayerState::Stopped);
+        let is_paused = matches!(player_state, PlayerState::Paused);
         let animation_time = 0.2;
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
             frame_response.id.with("seekbar_anim"),
@@ -947,8 +955,7 @@ impl Player {
                 get_decoder_from_stream_index(&audio_input_context, audio_stream_indices[0])?
                     .audio()?;
 
-            let audio_sample_buffer =
-                SharedRb::<f32, Vec<_>>::new(audio_device.0.spec().size as usize);
+            let audio_sample_buffer = HeapRb::<f32>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
             let audio_resampler = ffmpeg::software::resampling::context::Context::get2(
                 audio_decoder.format(),
@@ -1443,7 +1450,7 @@ impl Streamer for AudioStreamer {
         } else {
             resampled_frame.plane(0)
         };
-        while self.audio_sample_producer.free_len() < audio_samples.len() {
+        while self.audio_sample_producer.vacant_len() < audio_samples.len() {
             // std::thread::sleep(std::time::Duration::from_millis(10));
         }
         self.audio_sample_producer.push_slice(audio_samples);
@@ -1582,7 +1589,7 @@ impl AudioCallback for AudioDeviceCallback {
             *x = self
                 .sample_streams
                 .iter_mut()
-                .map(|s| s.sample_consumer.pop().unwrap_or(0.) * s.audio_volume.get())
+                .map(|s| s.sample_consumer.try_pop().unwrap_or(0.) * s.audio_volume.get())
                 .sum()
         }
     }
