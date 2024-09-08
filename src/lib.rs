@@ -72,6 +72,9 @@ impl AudioDevice {
 
     /// Create a new [`AudioDevice`]. Creates an [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
     pub fn new() -> Result<AudioDevice, String> {
+        // without setting this hint, SDL captures SIGINT (Ctrl+C) and because we are not handling SDL events
+        // this prevents the application from closing
+        sdl2::hint::set("SDL_NO_SIGNAL_HANDLERS", "1");
         Self::from_subsystem(&sdl2::init()?.audio()?)
     }
 }
