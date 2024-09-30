@@ -30,6 +30,7 @@ enum SubtitleField<'a> {
     Alignment(Align2),
     PrimaryFill(Color32),
     Position(Pos2),
+    #[allow(unused)]
     Undefined(&'a str),
 }
 
@@ -69,7 +70,7 @@ impl Subtitle {
         self.remaining_duration_ms = duration_ms;
         self
     }
-    pub(crate) fn from_ffmpeg_rect<'a>(rect: ffmpeg::subtitle::Rect<'a>) -> Result<Self> {
+    pub(crate) fn from_ffmpeg_rect(rect: ffmpeg::subtitle::Rect) -> Result<Self> {
         match rect {
             ffmpeg::subtitle::Rect::Ass(ass) => parse_ass_subtitle(ass.get()),
             ffmpeg::subtitle::Rect::Bitmap(_bitmap) => {

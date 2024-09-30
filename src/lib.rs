@@ -361,7 +361,7 @@ impl Player {
     }
     fn spawn_timers(&mut self) {
         let mut texture_handle = self.texture_handle.clone();
-        let texture_options = self.options.texture_options.clone();
+        let texture_options = self.options.texture_options;
         let ctx = self.ctx_ref.clone();
         let wait_duration = Duration::milliseconds((1000. / self.framerate) as i64);
 
@@ -398,7 +398,7 @@ impl Player {
         self.video_thread = Some(video_timer_guard);
 
         if let Some(audio_decoder) = self.audio_streamer.as_ref() {
-            let audio_decoder_ref = Arc::downgrade(&audio_decoder);
+            let audio_decoder_ref = Arc::downgrade(audio_decoder);
             let audio_timer_guard = self
                 .audio_timer
                 .schedule_repeating(Duration::zero(), move || play(&audio_decoder_ref));
@@ -406,7 +406,7 @@ impl Player {
         }
 
         if let Some(subtitle_decoder) = self.subtitle_streamer.as_ref() {
-            let subtitle_decoder_ref = Arc::downgrade(&subtitle_decoder);
+            let subtitle_decoder_ref = Arc::downgrade(subtitle_decoder);
             let subtitle_timer_guard = self
                 .subtitle_timer
                 .schedule_repeating(wait_duration, move || play(&subtitle_decoder_ref));
@@ -672,8 +672,10 @@ impl Player {
             "🔇"
         };
 
-        let mut icon_font_id = FontId::default();
-        icon_font_id.size = 16.;
+        let icon_font_id = FontId {
+            size: 16.,
+            ..Default::default()
+        };
 
         let subtitle_icon = "💬";
         let stream_icon = "🔁";
@@ -691,8 +693,10 @@ impl Player {
 
         let duration_text_offset = vec2(25., text_y_offset);
         let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
-        let mut duration_text_font_id = FontId::default();
-        duration_text_font_id.size = 14.;
+        let duration_text_font_id = FontId {
+            size: 14.,
+            ..Default::default()
+        };
 
         let shadow = Shadow {
             offset: vec2(10.0, 20.0),
@@ -926,8 +930,7 @@ impl Player {
                     let sound_frac = 1.
                         - ((hover_pos - sound_slider_rect.left_top()).y
                             / sound_slider_rect.height())
-                        .max(0.)
-                        .min(1.);
+                        .clamp(0., 1.);
                     self.options
                         .audio_volume
                         .set(sound_frac * self.options.max_audio_volume);
@@ -1202,9 +1205,8 @@ pub trait Streamer: Send {
             let seeking_backwards = target_ms < self.elapsed_ms().get();
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
 
-            if let Err(_) = self.input_context().seek(target_ts, ..target_ts) {
-                // dbg!(e); TODO: propogate error
-            } else {
+            // TODO: propogate error
+            if self.input_context().seek(target_ts, ..target_ts).is_ok() {
                 self.decoder().flush();
                 let mut previous_elapsed_ms = self.elapsed_ms().get();
 
@@ -1235,9 +1237,8 @@ pub trait Streamer: Send {
 
                 // frame preview
                 if self.is_primary_streamer() {
-                    match self.recieve_next_packet_until_frame() {
-                        Ok(frame) => self.apply_frame(frame),
-                        _ => (),
+                    if let Ok(frame) = self.recieve_next_packet_until_frame() {
+                        self.apply_frame(frame)
                     }
                 }
             }
@@ -1322,9 +1323,7 @@ pub trait Streamer: Send {
     fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
-            Err(e) => {
-                return Err(e);
-            }
+            Err(e) => Err(e),
         }
     }
 }
