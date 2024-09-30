@@ -8,7 +8,7 @@
 extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::NoUninit;
 use chrono::{DateTime, Duration, Utc};
 use egui::emath::RectTransform;
 use egui::epaint::Shadow;
@@ -169,15 +169,17 @@ pub struct Player {
 }
 
 /// The possible states of a [`Player`].
-#[repr(C)]
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Clone, Copy, Debug, NoUninit)]
+#[repr(u8)]
 pub enum PlayerState {
     /// No playback.
     Stopped,
     /// Streams have reached the end of the file.
     EndOfFile,
-    /// Stream is seeking. Inner bool represents whether or not the seek is currently in progress.
-    Seeking(bool),
+    /// Stream is seeking.
+    SeekingInProgress,
+    /// Stream has finished seeking.
+    SeekingFinished,
     /// Playback is paused.
     Paused,
     /// Playback is ongoing.
@@ -185,9 +187,6 @@ pub enum PlayerState {
     /// Playback is scheduled to restart.
     Restarting,
 }
-
-unsafe impl Zeroable for PlayerState {}
-unsafe impl Pod for PlayerState {}
 
 /// Streams video.
 pub struct VideoStreamer {
@@ -230,11 +229,11 @@ pub struct SubtitleStreamer {
 
 #[derive(Clone, Debug)]
 /// Simple concurrecy of primitive values.
-pub struct Shared<T: Copy + bytemuck::Pod> {
+pub struct Shared<T: Copy + bytemuck::NoUninit> {
     raw_value: Arc<Atomic<T>>,
 }
 
-impl<T: Copy + bytemuck::Pod> Shared<T> {
+impl<T: Copy + bytemuck::NoUninit> Shared<T> {
     /// Set the value.
     pub fn set(&self, value: T) {
         self.raw_value.store(value, atomic::Ordering::Relaxed)
@@ -322,7 +321,7 @@ impl Player {
     /// Seek to a location in the stream.
     pub fn seek(&mut self, seek_frac: f32) {
         let current_state = self.player_state.get();
-        if !matches!(current_state, PlayerState::Seeking(true)) {
+        if !matches!(current_state, PlayerState::SeekingInProgress) {
             match current_state {
                 PlayerState::Stopped | PlayerState::EndOfFile => {
                     self.preseek_player_state = Some(PlayerState::Paused);
@@ -340,7 +339,7 @@ impl Player {
             let subtitle_queue = self.subtitles_queue.clone();
 
             self.last_seek_ms = Some((seek_frac as f64 * self.duration_ms as f64) as i64);
-            self.set_state(PlayerState::Seeking(true));
+            self.set_state(PlayerState::SeekingInProgress);
 
             if let Some(audio_streamer) = audio_streamer.take() {
                 std::thread::spawn(move || {
@@ -450,10 +449,10 @@ impl Player {
                     }
                 }
             }
-            PlayerState::Seeking(seek_in_progress) => {
+            state @ (PlayerState::SeekingInProgress | PlayerState::SeekingFinished) => {
                 if self.last_seek_ms.is_some() {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-                    if !seek_in_progress {
+                    if matches!(state, PlayerState::SeekingFinished) {
                         if let Some(previeous_player_state) = self.preseek_player_state {
                             self.set_state(previeous_player_state)
                         }
@@ -558,7 +557,10 @@ impl Player {
     pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
         let hovered = ui.rect_contains_pointer(frame_response.rect);
         let player_state = self.player_state.get();
-        let currently_seeking = matches!(player_state, PlayerState::Seeking(_));
+        let currently_seeking = matches!(
+            player_state,
+            PlayerState::SeekingInProgress | PlayerState::SeekingFinished
+        );
         let is_stopped = matches!(player_state, PlayerState::Stopped);
         let is_paused = matches!(player_state, PlayerState::Paused);
         let animation_time = 0.2;
@@ -1243,7 +1245,7 @@ pub trait Streamer: Send {
             }
         }
         if self.is_primary_streamer() {
-            self.player_state().set(PlayerState::Seeking(false));
+            self.player_state().set(PlayerState::SeekingFinished);
         }
     }
     /// The type of data this stream corresponds to.
