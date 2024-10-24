@@ -8,6 +8,7 @@
 extern crate ffmpeg_the_third as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
+use bytemuck::NoUninit;
 use chrono::{DateTime, Duration, Utc};
 use egui::emath::RectTransform;
 use egui::epaint::Shadow;
@@ -28,7 +29,9 @@ use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
 use parking_lot::Mutex;
-use ringbuf::SharedRb;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::wrap::caching::Caching;
+use ringbuf::HeapRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
 use std::ops::Deref;
@@ -73,6 +76,9 @@ impl AudioDevice {
 
     /// Create a new [`AudioDevice`]. Creates an [`sdl2::AudioSubsystem`]. An [`AudioDevice`] is required for using audio.
     pub fn new() -> Result<AudioDevice, String> {
+        // without setting this hint, SDL captures SIGINT (Ctrl+C) and because we are not handling SDL events
+        // this prevents the application from closing
+        sdl2::hint::set("SDL_NO_SIGNAL_HANDLERS", "1");
         Self::from_subsystem(&sdl2::init()?.audio()?)
     }
 }
@@ -86,8 +92,8 @@ type PlayerMessageReciever = std::sync::mpsc::Receiver<PlayerMessage>;
 
 type ApplyVideoFrameFn = Box<dyn FnMut(ColorImage) + Send>;
 type SubtitleQueue = Arc<Mutex<VecDeque<Subtitle>>>;
-type RingbufProducer<T> = ringbuf::Producer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
-type RingbufConsumer<T> = ringbuf::Consumer<T, Arc<SharedRb<T, Vec<std::mem::MaybeUninit<T>>>>>;
+type RingbufProducer<T> = Caching<Arc<HeapRb<T>>, true, false>;
+type RingbufConsumer<T> = Caching<Arc<HeapRb<T>>, false, true>;
 
 type AudioSampleProducer = RingbufProducer<f32>;
 type AudioSampleConsumer = RingbufConsumer<f32>;
@@ -179,15 +185,18 @@ pub struct Player {
     input_path: String,
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
 /// The possible states of a [`Player`].
+#[derive(PartialEq, Clone, Copy, Debug, NoUninit)]
+#[repr(u8)]
 pub enum PlayerState {
     /// No playback.
     Stopped,
     /// Streams have reached the end of the file.
     EndOfFile,
-    /// Stream is seeking. Inner bool represents whether or not the seek is currently in progress.
-    Seeking(bool),
+    /// Stream is seeking.
+    SeekingInProgress,
+    /// Stream has finished seeking.
+    SeekingFinished,
     /// Playback is paused.
     Paused,
     /// Playback is ongoing.
@@ -237,11 +246,11 @@ pub struct SubtitleStreamer {
 
 #[derive(Clone, Debug)]
 /// Simple concurrecy of primitive values.
-pub struct Shared<T: Copy> {
+pub struct Shared<T: Copy + bytemuck::NoUninit> {
     raw_value: Arc<Atomic<T>>,
 }
 
-impl<T: Copy> Shared<T> {
+impl<T: Copy + bytemuck::NoUninit> Shared<T> {
     /// Set the value.
     pub fn set(&self, value: T) {
         self.raw_value.store(value, atomic::Ordering::Relaxed)
@@ -329,7 +338,7 @@ impl Player {
     /// Seek to a location in the stream.
     pub fn seek(&mut self, seek_frac: f32) {
         let current_state = self.player_state.get();
-        if !matches!(current_state, PlayerState::Seeking(true)) {
+        if !matches!(current_state, PlayerState::SeekingInProgress) {
             match current_state {
                 PlayerState::Stopped | PlayerState::EndOfFile => {
                     self.preseek_player_state = Some(PlayerState::Paused);
@@ -347,7 +356,7 @@ impl Player {
             let subtitle_queue = self.subtitles_queue.clone();
 
             self.last_seek_ms = Some((seek_frac as f64 * self.duration_ms as f64) as i64);
-            self.set_state(PlayerState::Seeking(true));
+            self.set_state(PlayerState::SeekingInProgress);
 
             if let Some(audio_streamer) = audio_streamer.take() {
                 std::thread::spawn(move || {
@@ -457,10 +466,10 @@ impl Player {
                     }
                 }
             }
-            PlayerState::Seeking(seek_in_progress) => {
+            state @ (PlayerState::SeekingInProgress | PlayerState::SeekingFinished) => {
                 if self.last_seek_ms.is_some() {
                     let last_seek_ms = *self.last_seek_ms.as_ref().unwrap();
-                    if !seek_in_progress {
+                    if matches!(state, PlayerState::SeekingFinished) {
                         if let Some(previeous_player_state) = self.preseek_player_state {
                             self.set_state(previeous_player_state)
                         }
@@ -561,9 +570,13 @@ impl Player {
     /// [`Player::ui`] or [`Player::ui_at`].
     pub fn render_controls(&mut self, ui: &mut Ui, frame_response: &Response) {
         let hovered = ui.rect_contains_pointer(frame_response.rect);
-        let currently_seeking = matches!(self.player_state.get(), PlayerState::Seeking(_));
-        let is_stopped = matches!(self.player_state.get(), PlayerState::Stopped);
-        let is_paused = matches!(self.player_state.get(), PlayerState::Paused);
+        let player_state = self.player_state.get();
+        let currently_seeking = matches!(
+            player_state,
+            PlayerState::SeekingInProgress | PlayerState::SeekingFinished
+        );
+        let is_stopped = matches!(player_state, PlayerState::Stopped);
+        let is_paused = matches!(player_state, PlayerState::Paused);
         let animation_time = 0.2;
         let seekbar_anim_frac = ui.ctx().animate_bool_with_time(
             frame_response.id.with("seekbar_anim"),
@@ -590,7 +603,6 @@ impl Player {
         let mut seekbar_rect =
             Rect::from_min_size(seekbar_pos, vec2(seekbar_width, seekbar_height));
         let seekbar_interact_rect = fullseekbar_rect.expand(10.);
-        ui.interact(seekbar_interact_rect, frame_response.id, Sense::drag());
 
         let seekbar_response = ui.interact(
             seekbar_interact_rect,
@@ -618,13 +630,15 @@ impl Player {
         );
 
         if currently_seeking {
-            let mut seek_indicator_shadow = Shadow::big_dark();
-            seek_indicator_shadow.color = seek_indicator_shadow
-                .color
-                .linear_multiply(seek_indicator_anim);
+            let seek_indicator_shadow = Shadow {
+                offset: vec2(10.0, 20.0),
+                blur: 15.0,
+                spread: 0.0,
+                color: Color32::from_black_alpha(96).linear_multiply(seek_indicator_anim),
+            };
             let spinner_size = 20. * seek_indicator_anim;
             ui.painter()
-                .add(seek_indicator_shadow.tessellate(frame_response.rect, Rounding::ZERO));
+                .add(seek_indicator_shadow.as_shape(frame_response.rect, Rounding::ZERO));
             ui.put(
                 Rect::from_center_size(frame_response.rect.center(), Vec2::splat(spinner_size)),
                 Spinner::new().size(spinner_size),
@@ -696,17 +710,21 @@ impl Player {
         let mut duration_text_font_id = FontId::default();
         duration_text_font_id.size = 14.;
 
-        let mut shadow = Shadow::big_light();
-        shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
+        let shadow = Shadow {
+            offset: vec2(10.0, 20.0),
+            blur: 15.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(25).linear_multiply(seekbar_anim_frac),
+        };
 
         let mut shadow_rect = frame_response.rect;
         shadow_rect.set_top(shadow_rect.bottom() - seekbar_offset - 10.);
-        let shadow_mesh = shadow.tessellate(shadow_rect, Rounding::ZERO);
 
         let fullseekbar_color = Color32::GRAY.linear_multiply(seekbar_anim_frac);
         let seekbar_color = Color32::WHITE.linear_multiply(seekbar_anim_frac);
 
-        ui.painter().add(shadow_mesh);
+        ui.painter()
+            .add(shadow.as_shape(shadow_rect, Rounding::ZERO));
 
         ui.painter().rect_filled(
             fullseekbar_rect,
@@ -960,12 +978,11 @@ impl Player {
                 get_decoder_from_stream_index(&audio_input_context, audio_stream_indices[0])?
                     .audio()?;
 
-            let audio_sample_buffer =
-                SharedRb::<f32, Vec<_>>::new(audio_device.0.spec().size as usize);
+            let audio_sample_buffer = HeapRb::<f32>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
-            let audio_resampler = ffmpeg::software::resampling::context::Context::get(
+            let audio_resampler = ffmpeg::software::resampling::context::Context::get2(
                 audio_decoder.format(),
-                audio_decoder.channel_layout(),
+                audio_decoder.ch_layout(),
                 audio_decoder.rate(),
                 audio_device.0.spec().format.to_sample(),
                 ChannelLayout::STEREO,
@@ -1291,7 +1308,7 @@ pub trait Streamer: Send {
             }
         }
         if self.is_primary_streamer() {
-            self.player_state().set(PlayerState::Seeking(false));
+            self.player_state().set(PlayerState::SeekingFinished);
         }
     }
     /// The type of data this stream corresponds to.
@@ -1326,7 +1343,8 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1456,9 +1474,9 @@ impl Streamer for AudioStreamer {
             .unwrap()
             .audio()
             .unwrap();
-        let new_resampler = ffmpeg::software::resampling::context::Context::get(
+        let new_resampler = ffmpeg::software::resampling::context::Context::get2(
             new_decoder.format(),
-            new_decoder.channel_layout(),
+            new_decoder.ch_layout(),
             new_decoder.rate(),
             self.resampler.output().format,
             ChannelLayout::STEREO,
@@ -1500,7 +1518,7 @@ impl Streamer for AudioStreamer {
         } else {
             resampled_frame.plane(0)
         };
-        while self.audio_sample_producer.free_len() < audio_samples.len() {
+        while self.audio_sample_producer.vacant_len() < audio_samples.len() {
             // std::thread::sleep(std::time::Duration::from_millis(10));
         }
         self.audio_sample_producer.push_slice(audio_samples);
@@ -1555,7 +1573,8 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some((stream, packet)) = self.input_context().packets().next() {
+        if let Some(packet) = self.input_context().packets().next() {
+            let (stream, packet) = packet?;
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 if let Some(dts) = packet.dts() {
@@ -1638,7 +1657,7 @@ impl AudioCallback for AudioDeviceCallback {
             *x = self
                 .sample_streams
                 .iter_mut()
-                .map(|s| s.sample_consumer.pop().unwrap_or(0.) * s.audio_volume.get())
+                .map(|s| s.sample_consumer.try_pop().unwrap_or(0.) * s.audio_volume.get())
                 .sum()
         }
     }
@@ -1652,14 +1671,17 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
         panic!("data is not packed");
     }
 
-    if !<T as ffmpeg::frame::audio::Sample>::is_valid(frame.format(), frame.channels()) {
+    if !<T as ffmpeg::frame::audio::Sample>::is_valid(
+        frame.format(),
+        frame.ch_layout().channels() as u16,
+    ) {
         panic!("unsupported type");
     }
 
     unsafe {
         std::slice::from_raw_parts(
             (*frame.as_ptr()).data[0] as *const T,
-            frame.samples() * frame.channels() as usize,
+            frame.samples() * frame.ch_layout().channels() as usize,
         )
     }
 }

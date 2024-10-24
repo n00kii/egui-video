@@ -1,6 +1,6 @@
 # egui-video, a video playing library for [`egui`](https://github.com/emilk/egui)
-[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video/0.6.0)
-[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/0.6.0/egui_video/)
+[![crates.io](https://img.shields.io/crates/v/egui-video)](https://crates.io/crates/egui-video)
+[![docs](https://docs.rs/egui-video/badge.svg)](https://docs.rs/egui-video/latest/egui_video/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/n00kii/egui-video/blob/main/README.md)
 
 https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda65dc54b23
@@ -8,7 +8,7 @@ https://github.com/n00kii/egui-video/assets/57325298/c618ff0a-9ad2-4cf0-b14a-dda
 plays videos in egui from file path or from bytes
 
 ## dependancies:
- - requires ffmpeg 6. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
+ - requires ffmpeg 6 or 7. follow the build instructions [here](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building)
  - requires sdl2. by default, a feature is enabled to automatically compile it for you, but you are free to disable it and follow [these instructions](https://github.com/Rust-SDL2/rust-sdl2#requirements)
 ## usage:
 ```rust
