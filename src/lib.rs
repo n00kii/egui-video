@@ -31,6 +31,7 @@ use parking_lot::Mutex;
 use ringbuf::SharedRb;
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
 use std::collections::VecDeque;
+use std::ops::Deref;
 use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
 use subtitle::Subtitle;
@@ -116,7 +117,7 @@ impl Default for PlayerOptions {
 }
 
 impl PlayerOptions {
-    /// Set the maxmimum player volume, and scale the actual player volume to the 
+    /// Set the maxmimum player volume, and scale the actual player volume to the
     /// same current ratio.
     pub fn set_max_audio_volume(&mut self, volume: f32) {
         self.audio_volume
@@ -154,8 +155,8 @@ pub struct Player {
     pub framerate: f64,
     /// Configures certain aspects of this [`Player`].
     pub options: PlayerOptions,
-    audio_stream_info: (usize, usize),
-    subtitle_stream_info: (usize, usize),
+    audio_stream_info: StreamInfo,
+    subtitle_stream_info: StreamInfo,
     message_sender: PlayerMessageSender,
     message_reciever: PlayerMessageReciever,
     video_timer: Timer,
@@ -198,7 +199,7 @@ pub enum PlayerState {
 /// Streams video.
 pub struct VideoStreamer {
     video_decoder: ffmpeg::decoder::Video,
-    video_stream_index: usize,
+    video_stream_index: StreamIndex,
     player_state: Shared<PlayerState>,
     duration_ms: i64,
     input_context: Input,
@@ -217,7 +218,7 @@ pub struct AudioStreamer {
     audio_sample_producer: AudioSampleProducer,
     input_context: Input,
     player_state: Shared<PlayerState>,
-    audio_stream_indices: VecDeque<usize>,
+    audio_stream_indices: VecDeque<StreamIndex>,
 }
 
 /// Streams subtitles.
@@ -231,7 +232,7 @@ pub struct SubtitleStreamer {
     subtitles_queue: SubtitleQueue,
     input_context: Input,
     player_state: Shared<PlayerState>,
-    subtitle_stream_indices: VecDeque<usize>,
+    subtitle_stream_indices: VecDeque<StreamIndex>,
 }
 
 #[derive(Clone, Debug)]
@@ -476,15 +477,12 @@ impl Player {
             _ => (),
         }
         if let Ok(message) = self.message_reciever.try_recv() {
-            fn increment_stream_info(stream_info: &mut (usize, usize)) {
-                stream_info.0 = ((stream_info.0 + 1) % (stream_info.1 + 1)).max(1);
-            }
             match message {
                 PlayerMessage::StreamCycled(stream_type) => match stream_type {
-                    Type::Audio => increment_stream_info(&mut self.audio_stream_info),
+                    Type::Audio => self.audio_stream_info.cycle(),
                     Type::Subtitle => {
                         self.current_subtitles.clear();
-                        increment_stream_info(&mut self.subtitle_stream_info);
+                        self.subtitle_stream_info.cycle();
                     }
                     _ => unreachable!(),
                 },
@@ -761,8 +759,8 @@ impl Player {
             }
         }
 
-        let is_subtitle_cyclable = self.subtitle_stream_info.1 > 1;
-        let is_audio_cyclable = self.audio_stream_info.1 > 1;
+        let is_audio_cyclable = self.audio_stream_info.is_cyclable();
+        let is_subtitle_cyclable = self.audio_stream_info.is_cyclable();
 
         if is_audio_cyclable || is_subtitle_cyclable {
             let stream_icon_rect = ui.painter().text(
@@ -785,11 +783,15 @@ impl Player {
                 let text = match stream_type {
                     Type::Audio => format!(
                         "{} {}/{}",
-                        sound_icon, self.audio_stream_info.0, self.audio_stream_info.1
+                        sound_icon,
+                        *self.audio_stream_info.current_stream,
+                        self.audio_stream_info.total_streams
                     ),
                     Type::Subtitle => format!(
                         "{} {}/{}",
-                        subtitle_icon, self.subtitle_stream_info.0, self.subtitle_stream_info.1
+                        subtitle_icon,
+                        *self.subtitle_stream_info.current_stream,
+                        self.subtitle_stream_info.total_streams
                     ),
                     _ => unreachable!(),
                 };
@@ -982,7 +984,7 @@ impl Player {
             audio_device.0.resume();
 
             self.stop_direct();
-            self.audio_stream_info = (1, audio_stream_indices.len()); // first stream, out of all the other streams
+            self.audio_stream_info = StreamInfo::from_total(audio_stream_indices.len());
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
                 player_state: self.player_state.clone(),
@@ -1014,7 +1016,7 @@ impl Player {
                     .subtitle()?;
 
             self.stop_direct();
-            self.subtitle_stream_info = (1, subtitle_stream_indices.len()); // first stream, out of all the other streams
+            self.subtitle_stream_info = StreamInfo::from_total(subtitle_stream_indices.len());
             Some(SubtitleStreamer {
                 next_packet: None,
                 duration_ms: self.duration_ms,
@@ -1075,7 +1077,7 @@ impl Player {
             .streams()
             .best(Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
-        let video_stream_index = video_stream.index();
+        let video_stream_index = StreamIndex::from(video_stream.index());
 
         let video_elapsed_ms = Shared::new(0);
         let audio_elapsed_ms = Shared::new(0);
@@ -1110,8 +1112,8 @@ impl Player {
             audio_streamer: None,
             subtitle_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
-            subtitle_stream_info: (0, 0),
-            audio_stream_info: (0, 0),
+            subtitle_stream_info: StreamInfo::new(),
+            audio_stream_info: StreamInfo::new(),
             framerate,
             video_timer: Timer::new(),
             audio_timer: Timer::new(),
@@ -1168,21 +1170,66 @@ impl Player {
 fn get_stream_indices_of_type(
     input_context: &Input,
     stream_type: ffmpeg::media::Type,
-) -> VecDeque<usize> {
+) -> VecDeque<StreamIndex> {
     input_context
         .streams()
-        .filter_map(|s| (s.parameters().medium() == stream_type).then_some(s.index()))
+        .filter_map(|s| {
+            (s.parameters().medium() == stream_type).then_some(StreamIndex::from(s.index()))
+        })
         .collect::<VecDeque<_>>()
 }
 
 fn get_decoder_from_stream_index(
     input_context: &Input,
-    stream_index: usize,
+    stream_index: StreamIndex,
 ) -> Result<ffmpeg::decoder::Decoder> {
     let context = ffmpeg::codec::context::Context::from_parameters(
-        input_context.stream(stream_index).unwrap().parameters(),
+        input_context.stream(*stream_index).unwrap().parameters(),
     )?;
     Ok(context.decoder())
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub struct StreamIndex(usize);
+
+impl From<usize> for StreamIndex {
+    fn from(value: usize) -> Self {
+        StreamIndex(value)
+    }
+}
+
+impl Deref for StreamIndex {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+struct StreamInfo {
+    current_stream: StreamIndex,
+    total_streams: usize,
+}
+
+impl StreamInfo {
+    fn new() -> Self {
+        Self {
+            current_stream: StreamIndex::from(0),
+            total_streams: 0,
+        }
+    }
+    fn from_total(total: usize) -> Self {
+        let mut slf = Self::new();
+        slf.total_streams = total;
+        slf
+    }
+    fn cycle(&mut self) {
+        self.current_stream =
+            StreamIndex::from(((*self.current_stream + 1) % (self.total_streams + 1)).max(1));
+    }
+    fn is_cyclable(&self) -> bool {
+        self.total_streams > 1
+    }
 }
 
 /// Streams data.
@@ -1252,9 +1299,9 @@ pub trait Streamer: Send {
     /// The primary streamer will control most of the state/syncing.
     fn is_primary_streamer(&self) -> bool;
     /// The stream index.
-    fn stream_index(&self) -> usize;
+    fn stream_index(&self) -> StreamIndex;
     /// Move to the next stream index, if possible, and return the new_stream_index.
-    fn cycle_stream(&mut self) -> usize;
+    fn cycle_stream(&mut self) -> StreamIndex;
     /// The elapsed time of this streamer, in milliseconds.
     fn elapsed_ms(&self) -> &Shared<i64>;
     /// The elapsed time of the primary streamer, in milliseconds.
@@ -1281,7 +1328,7 @@ pub trait Streamer: Send {
     fn recieve_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
-            if stream.index() == self.stream_index() {
+            if stream.index() == *self.stream_index() {
                 self.decoder().send_packet(&packet)?;
                 if let Some(dts) = packet.dts() {
                     self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
@@ -1338,11 +1385,11 @@ impl Streamer for VideoStreamer {
     fn is_primary_streamer(&self) -> bool {
         true
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.video_stream_index
     }
-    fn cycle_stream(&mut self) -> usize {
-        0
+    fn cycle_stream(&mut self) -> StreamIndex {
+        StreamIndex::from(0)
     }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.video_decoder.0
@@ -1399,10 +1446,10 @@ impl Streamer for AudioStreamer {
     fn is_primary_streamer(&self) -> bool {
         false
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.audio_stream_indices[0]
     }
-    fn cycle_stream(&mut self) -> usize {
+    fn cycle_stream(&mut self) -> StreamIndex {
         self.audio_stream_indices.rotate_right(1);
         let new_stream_index = self.stream_index();
         let new_decoder = get_decoder_from_stream_index(&self.input_context, new_stream_index)
@@ -1470,10 +1517,10 @@ impl Streamer for SubtitleStreamer {
     fn is_primary_streamer(&self) -> bool {
         false
     }
-    fn stream_index(&self) -> usize {
+    fn stream_index(&self) -> StreamIndex {
         self.subtitle_stream_indices[0]
     }
-    fn cycle_stream(&mut self) -> usize {
+    fn cycle_stream(&mut self) -> StreamIndex {
         self.subtitle_stream_indices.rotate_right(1);
         self.subtitle_decoder.flush();
         let new_stream_index = self.stream_index();
@@ -1510,7 +1557,7 @@ impl Streamer for SubtitleStreamer {
     fn recieve_next_packet(&mut self) -> Result<()> {
         if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
-            if stream.index() == self.stream_index() {
+            if stream.index() == *self.stream_index() {
                 if let Some(dts) = packet.dts() {
                     self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
                 }
