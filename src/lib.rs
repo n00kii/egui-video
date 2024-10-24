@@ -323,11 +323,7 @@ impl Player {
     }
     /// Stop the stream.
     pub fn stop(&mut self) {
-        self.set_state(PlayerState::Stopped)
-    }
-    /// Directly stop the stream. Use if you need to immmediately end the streams, and/or you
-    /// aren't able to call the player's [`Player::ui`]/[`Player::ui_at`] functions later on.
-    pub fn stop_direct(&mut self) {
+        self.set_state(PlayerState::Stopped);
         self.video_thread = None;
         self.audio_thread = None;
         self.reset()
@@ -431,7 +427,7 @@ impl Player {
     }
     /// Start the stream.
     pub fn start(&mut self) {
-        self.stop_direct();
+        self.stop();
         self.spawn_timers();
         self.resume();
     }
@@ -449,9 +445,6 @@ impl Player {
                 } else {
                     self.player_state.set(PlayerState::Stopped);
                 }
-            }
-            PlayerState::Stopped => {
-                self.stop_direct();
             }
             PlayerState::Playing => {
                 for subtitle in self.current_subtitles.iter_mut() {
@@ -990,7 +983,7 @@ impl Player {
 
             audio_device.0.resume();
 
-            self.stop_direct();
+            self.stop();
             self.audio_stream_info = StreamInfo::from_total(audio_stream_indices.len());
             Some(AudioStreamer {
                 duration_ms: self.duration_ms,
@@ -1022,7 +1015,7 @@ impl Player {
                 get_decoder_from_stream_index(&subtitle_input_context, subtitle_stream_indices[0])?
                     .subtitle()?;
 
-            self.stop_direct();
+            self.stop();
             self.subtitle_stream_info = StreamInfo::from_total(subtitle_stream_indices.len());
             Some(SubtitleStreamer {
                 next_packet: None,
