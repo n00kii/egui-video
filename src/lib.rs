@@ -799,18 +799,8 @@ impl Player {
 
             let mut draw_row = |stream_type: Type| {
                 let text = match stream_type {
-                    Type::Audio => format!(
-                        "{} {}/{}",
-                        sound_icon,
-                        *self.audio_stream_info.current_stream,
-                        self.audio_stream_info.total_streams
-                    ),
-                    Type::Subtitle => format!(
-                        "{} {}/{}",
-                        subtitle_icon,
-                        *self.subtitle_stream_info.current_stream,
-                        self.subtitle_stream_info.total_streams
-                    ),
+                    Type::Audio => format!("{} {}", sound_icon, self.audio_stream_info),
+                    Type::Subtitle => format!("{} {}", subtitle_icon, self.subtitle_stream_info),
                     _ => unreachable!(),
                 };
 
@@ -1207,6 +1197,7 @@ fn get_decoder_from_stream_index(
 }
 
 #[derive(PartialEq, Clone, Copy)]
+/// The index of the stream.
 pub struct StreamIndex(usize);
 
 impl From<usize> for StreamIndex {
@@ -1224,14 +1215,16 @@ impl Deref for StreamIndex {
 
 #[derive(PartialEq, Clone, Copy)]
 struct StreamInfo {
-    current_stream: StreamIndex,
+    // Not the actual `StreamIndex` of the stream. This is a user-facing number that starts
+    // at `1` and is incrememted when cycling between streams.
+    current_stream: usize,
     total_streams: usize,
 }
 
 impl StreamInfo {
     fn new() -> Self {
         Self {
-            current_stream: StreamIndex::from(0),
+            current_stream: 1,
             total_streams: 0,
         }
     }
@@ -1241,11 +1234,16 @@ impl StreamInfo {
         slf
     }
     fn cycle(&mut self) {
-        self.current_stream =
-            StreamIndex::from(((*self.current_stream + 1) % (self.total_streams + 1)).max(1));
+        self.current_stream = ((self.current_stream + 1) % (self.total_streams + 1)).max(1);
     }
     fn is_cyclable(&self) -> bool {
         self.total_streams > 1
+    }
+}
+
+impl std::fmt::Display for StreamInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.current_stream, self.total_streams)
     }
 }
 
