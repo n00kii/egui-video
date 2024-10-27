@@ -1339,8 +1339,13 @@ pub trait Streamer: Send {
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 self.decoder().send_packet(&packet)?;
-                if let Some(dts) = packet.dts() {
-                    self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
+                match packet.dts() {
+                    // Don't try to set elasped time off of undefined timestamp values
+                    Some(ffmpeg::ffi::AV_NOPTS_VALUE) => (),
+                    Some(dts) => {
+                        self.elapsed_ms().set(timestamp_to_millisec(dts, time_base));
+                    }
+                    _ => (),
                 }
             }
         } else {
