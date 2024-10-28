@@ -20,7 +20,7 @@ sdl2-bundled = ["sdl2/bundled"]
 [dependencies]
 egui = "0.29"
 atomic = "0.6.0"
-bytemuck = "^1.7"
+bytemuck = { version = "1.19", features = ["derive"]}
 ffmpeg-the-third = "2.0.1"
 anyhow = "1.0.86"
 timer = "0.2.0"
