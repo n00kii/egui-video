@@ -1,5 +1,5 @@
 use eframe::NativeOptions;
-use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Window};
+use egui::{CentralPanel, DragValue, Grid, Sense, Slider, TextEdit, Vec2, Window};
 use egui_video::{AudioDevice, Player};
 fn main() {
     let _ = eframe::run_native(
@@ -11,6 +11,7 @@ fn main() {
 struct App {
     audio_device: AudioDevice,
     player: Option<Player>,
+    player_size: Vec2,
 
     media_path: String,
     stream_size_scale: f32,
@@ -22,8 +23,9 @@ impl Default for App {
         Self {
             audio_device: AudioDevice::new().unwrap(),
             media_path: String::new(),
-            stream_size_scale: 1.,
+            stream_size_scale: 0.5,
             seek_frac: 0.,
+            player_size: Vec2::new(0.0, 0.0),
             player: None,
         }
     }
@@ -119,7 +121,7 @@ impl eframe::App for App {
                     });
                     ui.horizontal(|ui| {
                         ui.label("size scale");
-                        ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.));
+                        ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.).step_by(0.01));
                     });
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -151,7 +153,29 @@ impl eframe::App for App {
                     });
                 });
 
-                player.ui(ui, player.size * self.stream_size_scale);
+                Window::new("video").show(ctx, |ui| {
+                    let current_size = ui.available_size();
+
+                    // Calculate new size based on the desired aspect ratio
+                    let aspect_ratio = player.size.x / player.size.y; // Example: 16:9
+
+                    let mut new_width = current_size.x;
+                    let mut new_height = new_width / aspect_ratio;
+
+                    // Check if the calculated height is greater than the current height
+                    if new_height > current_size.y {
+                        new_height = current_size.y;
+                        new_width = new_height * aspect_ratio;
+                    }
+
+                    // Apply size constraints
+                    self.player_size = egui::Vec2::new(new_width, new_height);
+
+                    ui.set_min_size(self.player_size);
+                    ui.set_max_size(self.player_size);
+
+                    player.ui(ui, self.player_size)
+                });
             }
         });
     }
