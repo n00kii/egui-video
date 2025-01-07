@@ -16,9 +16,11 @@ from_bytes = ["dep:tempfile"]
 # will compile sdl2 for you if you do not have it
 # this may require other dependancies (see https://github.com/Rust-SDL2/rust-sdl2#bundled-feature)
 sdl2-bundled = ["sdl2/bundled"]
+eframe = ["dep:eframe"]
 
 [dependencies]
 egui = "0.29"
+eframe = { version = "0.30.0", optional = true }
 atomic = "0.6.0"
 bytemuck = { version = "1.19", features = ["derive"]}
 ffmpeg-the-third = "2.0.1"

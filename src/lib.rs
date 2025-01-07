@@ -10,13 +10,17 @@ use anyhow::Result;
 use atomic::Atomic;
 use bytemuck::NoUninit;
 use chrono::{DateTime, Duration, Utc};
-use egui::emath::RectTransform;
-use egui::epaint::Shadow;
-use egui::load::SizedTexture;
-
+#[cfg(feature = "eframe")]
+use eframe::egui::{
+    emath::RectTransform, epaint::Shadow, load::SizedTexture, vec2, Align2, Color32, ColorImage,
+    Context, FontId, Image, Pos2, Rect, Response, Rounding, Sense, Spinner, TextureHandle,
+    TextureOptions, Ui, Vec2,
+};
+#[cfg(not(feature = "eframe"))]
 use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Pos2, Rect, Response, Rounding, Sense,
-    Spinner, TextureHandle, TextureOptions, Ui, Vec2,
+    emath::RectTransform, epaint::Shadow, load::SizedTexture, vec2, Align2, Color32, ColorImage,
+    Context, FontId, Image, Pos2, Rect, Response, Rounding, Sense, Spinner, TextureHandle,
+    TextureOptions, Ui, Vec2,
 };
 use ffmpeg::error::EAGAIN;
 use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
@@ -24,7 +28,7 @@ use ffmpeg::format::context::input::Input;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::frame::Audio;
 use ffmpeg::media::Type;
-use ffmpeg::software::scaling::{context::Context, flag::Flags};
+use ffmpeg::software::scaling::flag::Flags;
 use ffmpeg::util::frame::video::Video;
 use ffmpeg::{rescale, Packet, Rational, Rescale};
 use ffmpeg::{software, ChannelLayout};
@@ -171,7 +175,7 @@ pub struct Player {
     audio_thread: Option<Guard>,
     video_thread: Option<Guard>,
     subtitle_thread: Option<Guard>,
-    ctx_ref: egui::Context,
+    ctx_ref: Context,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
     #[cfg(feature = "from_bytes")]
@@ -512,7 +516,7 @@ impl Player {
     }
 
     /// Draw the video frame and player controls and process state changes.
-    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> egui::Response {
+    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> Response {
         let frame_response = self.render_frame(ui, size);
         self.render_controls(ui, &frame_response);
         self.render_subtitles(ui, &frame_response);
@@ -521,7 +525,7 @@ impl Player {
     }
 
     /// Draw the video frame and player controls with a specific rect, and process state changes.
-    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
+    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> Response {
         let frame_response = self.render_frame_at(ui, rect);
         self.render_controls(ui, &frame_response);
         self.render_subtitles(ui, &frame_response);
@@ -944,7 +948,7 @@ impl Player {
 
     #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
-    pub fn from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(ctx: &Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
@@ -1074,7 +1078,7 @@ impl Player {
     }
 
     /// Create a new [`Player`].
-    pub fn new(ctx: &egui::Context, input_path: &String) -> Result<Self> {
+    pub fn new(ctx: &Context, input_path: &String) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -1434,7 +1438,7 @@ impl Streamer for VideoStreamer {
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
         let mut rgb_frame = Video::empty();
-        let mut scaler = Context::get(
+        let mut scaler = ffmpeg::software::scaling::Context::get(
             frame.format(),
             frame.width(),
             frame.height(),
