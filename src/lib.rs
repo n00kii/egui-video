@@ -10,6 +10,7 @@ use anyhow::Result;
 use atomic::Atomic;
 use bytemuck::NoUninit;
 use chrono::{DateTime, Duration, Utc};
+
 #[cfg(feature = "eframe")]
 use eframe::egui::{
     emath::RectTransform, epaint::Shadow, load::SizedTexture, vec2, Align2, Color32, ColorImage,
@@ -22,25 +23,29 @@ use egui::{
     Context, FontId, Image, Pos2, Rect, Response, Rounding, Sense, Spinner, TextureHandle,
     TextureOptions, Ui, Vec2,
 };
-use ffmpeg::error::EAGAIN;
-use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
-use ffmpeg::format::context::input::Input;
-use ffmpeg::format::{input, Pixel};
-use ffmpeg::frame::Audio;
-use ffmpeg::media::Type;
-use ffmpeg::software::scaling::flag::Flags;
-use ffmpeg::util::frame::video::Video;
-use ffmpeg::{rescale, Packet, Rational, Rescale};
-use ffmpeg::{software, ChannelLayout};
+use ffmpeg::{
+    error::EAGAIN,
+    ffi::{AVERROR, AV_TIME_BASE},
+    format::{context::input::Input, input, Pixel},
+    frame::Audio,
+    media::Type,
+    software::scaling::flag::Flags,
+    util::frame::video::Video,
+    {rescale, Packet, Rational, Rescale}, {software, ChannelLayout},
+};
 use parking_lot::Mutex;
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
-use ringbuf::wrap::caching::Caching;
-use ringbuf::HeapRb;
+use ringbuf::{
+    traits::{Consumer, Observer, Producer, Split},
+    wrap::caching::Caching,
+    HeapRb,
+};
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
-use std::collections::VecDeque;
-use std::ops::Deref;
-use std::sync::{Arc, Weak};
-use std::time::UNIX_EPOCH;
+use std::{
+    collections::VecDeque,
+    ops::Deref,
+    sync::{Arc, Weak},
+    time::UNIX_EPOCH,
+};
 use subtitle::Subtitle;
 use timer::{Guard, Timer};
 
