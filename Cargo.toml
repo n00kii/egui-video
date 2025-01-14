@@ -23,7 +23,7 @@ egui = "0.30.0"
 eframe = { version = "0.30.0", optional = true }
 atomic = "0.6.0"
 bytemuck = { version = "1.21.0", features = ["derive"]}
-ffmpeg-the-third = "2.0.1"
+ffmpeg-next = "7.1.0"
 anyhow = "1.0.95"
 timer = "0.2.0"
 chrono = "0.4.39"

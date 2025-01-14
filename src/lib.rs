@@ -5,7 +5,7 @@
 //! ```
 #![doc = include_str!("../examples/main.rs")]
 //! ```
-extern crate ffmpeg_the_third as ffmpeg;
+extern crate ffmpeg_next as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use bytemuck::NoUninit;
@@ -975,9 +975,9 @@ impl Player {
 
             let audio_sample_buffer = HeapRb::<f32>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
-            let audio_resampler = ffmpeg::software::resampling::context::Context::get2(
+            let audio_resampler = ffmpeg::software::resampling::context::Context::get(
                 audio_decoder.format(),
-                audio_decoder.ch_layout(),
+                audio_decoder.channel_layout(),
                 audio_decoder.rate(),
                 audio_device.0.spec().format.to_sample(),
                 ChannelLayout::STEREO,
@@ -1344,8 +1344,7 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(packet) = self.input_context().packets().next() {
-            let (stream, packet) = packet?;
+        if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1478,9 +1477,9 @@ impl Streamer for AudioStreamer {
             .unwrap()
             .audio()
             .unwrap();
-        let new_resampler = ffmpeg::software::resampling::context::Context::get2(
+        let new_resampler = ffmpeg::software::resampling::context::Context::get(
             new_decoder.format(),
-            new_decoder.ch_layout(),
+            new_decoder.channel_layout(),
             new_decoder.rate(),
             self.resampler.output().format,
             ChannelLayout::STEREO,
@@ -1577,8 +1576,7 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(packet) = self.input_context().packets().next() {
-            let (stream, packet) = packet?;
+        if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 if let Some(dts) = packet.dts() {
@@ -1677,7 +1675,7 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
 
     if !<T as ffmpeg::frame::audio::Sample>::is_valid(
         frame.format(),
-        frame.ch_layout().channels() as u16,
+        frame.channel_layout().channels() as u16,
     ) {
         panic!("unsupported type");
     }
@@ -1685,7 +1683,7 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
     unsafe {
         std::slice::from_raw_parts(
             (*frame.as_ptr()).data[0] as *const T,
-            frame.samples() * frame.ch_layout().channels() as usize,
+            frame.samples() * frame.channel_layout().channels() as usize,
         )
     }
 }
