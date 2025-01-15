@@ -1,4 +1,7 @@
 use anyhow::Result;
+#[cfg(feature = "eframe")]
+use eframe::egui::{Align2, Color32, Margin, Pos2};
+#[cfg(not(feature = "eframe"))]
 use egui::{Align2, Color32, Margin, Pos2};
 
 use self::ass::parse_ass_subtitle;

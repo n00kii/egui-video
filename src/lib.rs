@@ -5,38 +5,47 @@
 //! ```
 #![doc = include_str!("../examples/main.rs")]
 //! ```
-extern crate ffmpeg_the_third as ffmpeg;
+extern crate ffmpeg_next as ffmpeg;
 use anyhow::Result;
 use atomic::Atomic;
 use bytemuck::NoUninit;
 use chrono::{DateTime, Duration, Utc};
-use egui::emath::RectTransform;
-use egui::epaint::Shadow;
-use egui::load::SizedTexture;
 
-use egui::{
-    vec2, Align2, Color32, ColorImage, FontId, Image, Pos2, Rect, Response, Rounding, Sense,
-    Spinner, TextureHandle, TextureOptions, Ui, Vec2,
+#[cfg(feature = "eframe")]
+use eframe::egui::{
+    emath::RectTransform, epaint::Shadow, load::SizedTexture, vec2, Align2, Color32, ColorImage,
+    Context, FontId, Image, Pos2, Rect, Response, Rounding, Sense, Spinner, TextureHandle,
+    TextureOptions, Ui, Vec2,
 };
-use ffmpeg::error::EAGAIN;
-use ffmpeg::ffi::{AVERROR, AV_TIME_BASE};
-use ffmpeg::format::context::input::Input;
-use ffmpeg::format::{input, Pixel};
-use ffmpeg::frame::Audio;
-use ffmpeg::media::Type;
-use ffmpeg::software::scaling::{context::Context, flag::Flags};
-use ffmpeg::util::frame::video::Video;
-use ffmpeg::{rescale, Packet, Rational, Rescale};
-use ffmpeg::{software, ChannelLayout};
+#[cfg(not(feature = "eframe"))]
+use egui::{
+    emath::RectTransform, epaint::Shadow, load::SizedTexture, vec2, Align2, Color32, ColorImage,
+    Context, FontId, Image, Pos2, Rect, Response, Rounding, Sense, Spinner, TextureHandle,
+    TextureOptions, Ui, Vec2,
+};
+use ffmpeg::{
+    error::EAGAIN,
+    ffi::{AVERROR, AV_TIME_BASE},
+    format::{context::input::Input, input, Pixel},
+    frame::Audio,
+    media::Type,
+    software::scaling::flag::Flags,
+    util::frame::video::Video,
+    {rescale, Packet, Rational, Rescale}, {software, ChannelLayout},
+};
 use parking_lot::Mutex;
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
-use ringbuf::wrap::caching::Caching;
-use ringbuf::HeapRb;
+use ringbuf::{
+    traits::{Consumer, Observer, Producer, Split},
+    wrap::caching::Caching,
+    HeapRb,
+};
 use sdl2::audio::{self, AudioCallback, AudioFormat, AudioSpecDesired};
-use std::collections::VecDeque;
-use std::ops::Deref;
-use std::sync::{Arc, Weak};
-use std::time::UNIX_EPOCH;
+use std::{
+    collections::VecDeque,
+    ops::Deref,
+    sync::{Arc, Weak},
+    time::UNIX_EPOCH,
+};
 use subtitle::Subtitle;
 use timer::{Guard, Timer};
 
@@ -171,7 +180,7 @@ pub struct Player {
     audio_thread: Option<Guard>,
     video_thread: Option<Guard>,
     subtitle_thread: Option<Guard>,
-    ctx_ref: egui::Context,
+    ctx_ref: Context,
     last_seek_ms: Option<i64>,
     preseek_player_state: Option<PlayerState>,
     #[cfg(feature = "from_bytes")]
@@ -512,7 +521,7 @@ impl Player {
     }
 
     /// Draw the video frame and player controls and process state changes.
-    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> egui::Response {
+    pub fn ui(&mut self, ui: &mut Ui, size: Vec2) -> Response {
         let frame_response = self.render_frame(ui, size);
         self.render_controls(ui, &frame_response);
         self.render_subtitles(ui, &frame_response);
@@ -521,7 +530,7 @@ impl Player {
     }
 
     /// Draw the video frame and player controls with a specific rect, and process state changes.
-    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
+    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> Response {
         let frame_response = self.render_frame_at(ui, rect);
         self.render_controls(ui, &frame_response);
         self.render_subtitles(ui, &frame_response);
@@ -944,7 +953,7 @@ impl Player {
 
     #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
-    pub fn from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(ctx: &Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path().to_string_lossy().to_string();
@@ -966,9 +975,9 @@ impl Player {
 
             let audio_sample_buffer = HeapRb::<f32>::new(audio_device.0.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
-            let audio_resampler = ffmpeg::software::resampling::context::Context::get2(
+            let audio_resampler = ffmpeg::software::resampling::context::Context::get(
                 audio_decoder.format(),
-                audio_decoder.ch_layout(),
+                audio_decoder.channel_layout(),
                 audio_decoder.rate(),
                 audio_device.0.spec().format.to_sample(),
                 ChannelLayout::STEREO,
@@ -1074,7 +1083,7 @@ impl Player {
     }
 
     /// Create a new [`Player`].
-    pub fn new(ctx: &egui::Context, input_path: &String) -> Result<Self> {
+    pub fn new(ctx: &Context, input_path: &String) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -1335,8 +1344,7 @@ pub trait Streamer: Send {
     }
     /// Recieve the next packet of the stream.
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(packet) = self.input_context().packets().next() {
-            let (stream, packet) = packet?;
+        if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 self.decoder().send_packet(&packet)?;
@@ -1434,7 +1442,7 @@ impl Streamer for VideoStreamer {
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
         let mut rgb_frame = Video::empty();
-        let mut scaler = Context::get(
+        let mut scaler = ffmpeg::software::scaling::Context::get(
             frame.format(),
             frame.width(),
             frame.height(),
@@ -1469,9 +1477,9 @@ impl Streamer for AudioStreamer {
             .unwrap()
             .audio()
             .unwrap();
-        let new_resampler = ffmpeg::software::resampling::context::Context::get2(
+        let new_resampler = ffmpeg::software::resampling::context::Context::get(
             new_decoder.format(),
-            new_decoder.ch_layout(),
+            new_decoder.channel_layout(),
             new_decoder.rate(),
             self.resampler.output().format,
             ChannelLayout::STEREO,
@@ -1568,8 +1576,7 @@ impl Streamer for SubtitleStreamer {
         &self.player_state
     }
     fn recieve_next_packet(&mut self) -> Result<()> {
-        if let Some(packet) = self.input_context().packets().next() {
-            let (stream, packet) = packet?;
+        if let Some((stream, packet)) = self.input_context().packets().next() {
             let time_base = stream.time_base();
             if stream.index() == *self.stream_index() {
                 if let Some(dts) = packet.dts() {
@@ -1668,7 +1675,7 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
 
     if !<T as ffmpeg::frame::audio::Sample>::is_valid(
         frame.format(),
-        frame.ch_layout().channels() as u16,
+        frame.channel_layout().channels() as u16,
     ) {
         panic!("unsupported type");
     }
@@ -1676,7 +1683,7 @@ fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T]
     unsafe {
         std::slice::from_raw_parts(
             (*frame.as_ptr()).data[0] as *const T,
-            frame.samples() * frame.ch_layout().channels() as usize,
+            frame.samples() * frame.channel_layout().channels() as usize,
         )
     }
 }
