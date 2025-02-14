@@ -50,7 +50,7 @@ impl Default for Subtitle {
             },
             remaining_duration_ms: 0,
             font_size: 30.,
-            margin: Margin::same(85.),
+            margin: Margin::same(85),
             alignment: Align2::CENTER_CENTER,
             primary_fill: Color32::WHITE,
             position: None,
