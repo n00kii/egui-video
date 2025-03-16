@@ -11,27 +11,23 @@ authors = ["n00kii"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["sdl2/bundled"]
 from_bytes = ["dep:tempfile"]
-# will compile sdl2 for you if you do not have it
-# this may require other dependancies (see https://github.com/Rust-SDL2/rust-sdl2#bundled-feature)
-sdl2-bundled = ["sdl2/bundled"]
 
 [dependencies]
-egui = "0.29"
+egui = "0.31"
 atomic = "0.6.0"
-bytemuck = { version = "1.19", features = ["derive"]}
+bytemuck = { version = "1.19", features = ["derive"] }
 ffmpeg-the-third = "2.0.1"
 anyhow = "1.0.86"
 timer = "0.2.0"
-chrono = "0.4.38"
+chrono = "0.4"
 tempfile = { version = "3.12.0", optional = true }
-sdl2 = { version = "0.37.0" }
 ringbuf = "0.4.4"
 parking_lot = "0.12.3"
-itertools = "0.13.0"
+itertools = "0.14.0"
 nom = "7.1.3"
+cpal = "0.15.3"
 
 [dev-dependencies]
 rfd = "0.15.0"
-eframe = "0.29"
+eframe = "0.31"
